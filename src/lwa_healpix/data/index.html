@@ -1,0 +1,142 @@
+
+<!DOCTYPE html>
+
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no">
+    <noscript>Please enable Javascript to view this page.</noscript>
+    <style>
+      body { margin: 0; }
+      #aladin-lite { width: 100%; height: 100vh; }
+      #controls {
+        position: absolute;
+        top: 50%;
+        right: 10px;
+        transform: translateY(-50%);
+        z-index: 1000;
+        background: rgba(255,255,255,0.9);
+        padding: 12px;
+        border-radius: 6px;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 180px;
+      }
+      .control-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .control-row label {
+        font-size: 13px;
+        color: #333;
+        flex: 0 0 70px;
+        text-align: right;
+      }
+      .control-row input,
+      .control-row select {
+        flex: 1;
+        padding: 4px 6px;
+        font-size: 13px;
+      }
+      .control-row input[type="number"] {
+        max-width: 80px;
+      }
+      .control-row button {
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+    </style>
+</head>
+
+<body>
+  <div id="controls">
+    <div class="control-row">
+      <label for="minCutInput">Min cut</label>
+      <input id="minCutInput" type="number" step="any" value="-1" />
+    </div>
+    <div class="control-row">
+      <label for="maxCutInput">Max cut</label>
+      <input id="maxCutInput" type="number" step="any" value="10" />
+    </div>
+    <div class="control-row">
+      <label for="colormapSelect">Colormap</label>
+      <select id="colormapSelect">
+        <option value="cubehelix">Cubehelix</option>
+        <option value="grayscale">Grayscale</option>
+        <option value="viridis">Viridis</option>
+        <option value="native">Native</option>
+      </select>
+    </div>
+    <div class="control-row">
+      <button id="resetBtn" type="button" style="width: 100%;">Reset All</button>
+    </div>
+  </div>
+  <div id="aladin-lite"></div>
+</body>
+
+<script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+
+<script type="text/javascript">
+  let aladin = null;
+  const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
+
+  function getSurvey() {
+    return aladin && aladin.getBaseImageLayer();
+  }
+
+  A.init.then(() => {
+    aladin = A.aladin('#aladin-lite', {
+      target: '0 +40',
+      fov: 150,
+      survey: A.imageHiPS('./', {
+        name: 'Local HiPS',
+        imgFormat: 'fits',
+        colormap: defaultConfig.colormap,
+        stretch: 'linear',
+        minCut: defaultConfig.minCut,
+        maxCut: defaultConfig.maxCut
+      })
+    });
+
+    window.aladin = aladin;
+    window.A = A;
+  }).catch(err => {
+    console.error('Aladin initialization error:', err);
+  });
+
+  function applyCuts() {
+    const survey = getSurvey();
+    if (!survey) return;
+    const minVal = parseFloat(document.getElementById('minCutInput').value);
+    const maxVal = parseFloat(document.getElementById('maxCutInput').value);
+    if (Number.isFinite(minVal) && Number.isFinite(maxVal)) {
+      survey.setCuts(minVal, maxVal);
+    }
+  }
+
+  function applyColormap() {
+    const survey = getSurvey();
+    if (!survey) return;
+    const colormap = document.getElementById('colormapSelect').value;
+    survey.setColormap(colormap);
+  }
+
+  document.getElementById('minCutInput').addEventListener('change', applyCuts);
+  document.getElementById('maxCutInput').addEventListener('change', applyCuts);
+  document.getElementById('colormapSelect').addEventListener('change', applyColormap);
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    const survey = getSurvey();
+    if (!survey) return;
+    document.getElementById('minCutInput').value = defaultConfig.minCut;
+    document.getElementById('maxCutInput').value = defaultConfig.maxCut;
+    document.getElementById('colormapSelect').value = defaultConfig.colormap;
+    survey.setCuts(defaultConfig.minCut, defaultConfig.maxCut);
+    survey.setColormap(defaultConfig.colormap);
+  });
+</script>
+
+</html>

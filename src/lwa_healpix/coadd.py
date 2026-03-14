@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import shutil
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
 from astropy import wcs
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from reproject import reproject_from_healpix, reproject_interp, reproject_to_healpix
 from reproject.hips import reproject_to_hips
 
 __all__ = [
     "coadd_fits_to_healpix",
-    "make_hips",
-    "reproject_healpix_to_car",
+    "healpix_to_hips",
 ]
 
 DEFAULT_CAR_HEADER = fits.Header.fromstring(
@@ -36,11 +38,29 @@ CUNIT2  = 'deg'
 )
 
 
+def _pixel_elevations(wcs_2d: wcs.WCS, shape: tuple[int, int]) -> np.ndarray:
+    """Return the elevation in degrees of every pixel in a 2-D image.
+
+    Elevation is defined as 90 degrees minus the angular separation from
+    the image reference point (``CRVAL``), which is assumed to be the
+    local zenith.
+    """
+    ny, nx = shape
+    y, x = np.mgrid[:ny, :nx]
+    sky = wcs_2d.pixel_to_world(x, y)
+    center = SkyCoord(
+        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
+        unit="deg", frame=sky.frame.name,
+    )
+    return 90.0 - sky.separation(center).deg
+
+
 def coadd_fits_to_healpix(
     file_paths: list[str | Path],
     nside: int = 1024,
     coord_frame: str = "galactic",
     nested: bool = False,
+    min_elevation: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reproject FITS images to HEALPix and coadd them.
 
@@ -54,6 +74,12 @@ def coadd_fits_to_healpix(
         Coordinate frame for the HEALPix projection (e.g. ``"galactic"``).
     nested : bool, optional
         If ``True``, use the NESTED pixel ordering. Default is ``False`` (RING).
+    min_elevation : float or None, optional
+        Minimum elevation above the horizon in degrees.  Pixels below this
+        elevation are blanked before reprojection so that noisy data near the
+        horizon is excluded from the coadd.  Elevation is measured as the
+        angular distance from the image reference point (assumed to be the
+        local zenith).  If *None* (the default), no masking is applied.
 
     Returns
     -------
@@ -68,10 +94,16 @@ def coadd_fits_to_healpix(
     for fpath in file_paths:
         hdu = fits.open(fpath)[0]
         w0 = wcs.WCS(hdu)
-        input_data = (hdu.data.squeeze(), w0.dropaxis(3).dropaxis(2))
+        wcs_2d = w0.dropaxis(3).dropaxis(2)
+        data = hdu.data.squeeze()
+
+        if min_elevation is not None:
+            elevation = _pixel_elevations(wcs_2d, data.shape)
+            data = data.copy()
+            data[elevation < min_elevation] = np.nan
 
         hpx_array, hpx_footprint = reproject_to_healpix(
-            input_data, coord_frame, nside=nside, nested=nested
+            (data, wcs_2d), coord_frame, nside=nside, nested=nested
         )
         healpix_maps.append(np.nan_to_num(hpx_array, nan=0.0))
         healpix_weights.append(hpx_footprint)
@@ -88,13 +120,31 @@ def coadd_fits_to_healpix(
     return combined, total_weight
 
 
-def reproject_healpix_to_car(
+def _reproject_healpix_to_car(
     healpix_map: np.ndarray,
     coord_frame: str = "galactic",
     target_header: fits.Header | None = None,
     nested: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Reproject a HEALPix map onto a Plate Carr\u00e9e (CAR) grid.
+) -> tuple[np.ndarray, fits.Header]:
+    """Reproject a HEALPix map onto a Plate Carree (CAR) grid."""
+    if target_header is None:
+        target_header = DEFAULT_CAR_HEADER
+
+    flat_array, _ = reproject_from_healpix(
+        (healpix_map, coord_frame), target_header, nested=nested
+    )
+    return flat_array, target_header
+
+
+def healpix_to_hips(
+    healpix_map: np.ndarray,
+    coord_frame: str = "galactic",
+    output_directory: str | Path = "hips_output",
+    nested: bool = False,
+    target_header: fits.Header | None = None,
+    threads: bool = True,
+) -> None:
+    """Reproject a HEALPix map to a CAR grid and generate HiPS tiles.
 
     Parameters
     ----------
@@ -102,56 +152,30 @@ def reproject_healpix_to_car(
         1-D HEALPix map array.
     coord_frame : str, optional
         Coordinate frame of the input map (e.g. ``"galactic"``).
-    target_header : `~astropy.io.fits.Header`, optional
-        WCS header describing the output grid. If *None*, a default
-        full-sky 0.1-degree Galactic CAR grid is used.
-    nested : bool, optional
-        If ``True``, the input uses NESTED ordering. Default is ``False``.
-
-    Returns
-    -------
-    flat_array : numpy.ndarray
-        The reprojected 2-D image.
-    footprint : numpy.ndarray
-        Coverage footprint of the reprojection.
-    """
-    if target_header is None:
-        target_header = DEFAULT_CAR_HEADER
-
-    return reproject_from_healpix(
-        (healpix_map, coord_frame), target_header, nested=nested
-    )
-
-
-def make_hips(
-    image: np.ndarray,
-    header: fits.Header | None = None,
-    output_directory: str | Path = "hips_output",
-    coord_system_out: str = "galactic",
-    threads: bool = True,
-) -> None:
-    """Generate a HiPS tile set from a 2-D image with WCS.
-
-    Parameters
-    ----------
-    image : numpy.ndarray
-        2-D image array.
-    header : `~astropy.io.fits.Header`, optional
-        WCS header for *image*. If *None*, the default CAR header is used.
     output_directory : str or Path, optional
         Directory to write HiPS tiles into. Default is ``"hips_output"``.
-    coord_system_out : str, optional
-        Output coordinate system (e.g. ``"galactic"``).
+    nested : bool, optional
+        If ``True``, the input uses NESTED pixel ordering. Default is ``False``.
+    target_header : `~astropy.io.fits.Header`, optional
+        WCS header for the intermediate CAR grid. If *None*, a default
+        full-sky 0.1-degree Galactic CAR grid is used.
     threads : bool, optional
         Whether to use multi-threaded reprojection. Default is ``True``.
     """
-    if header is None:
-        header = DEFAULT_CAR_HEADER
+    flat_array, header = _reproject_healpix_to_car(
+        healpix_map, coord_frame=coord_frame,
+        target_header=target_header, nested=nested,
+    )
+
+    output_directory = Path(output_directory)
 
     reproject_to_hips(
-        (image, header),
+        (flat_array, header),
         output_directory=str(output_directory),
-        coord_system_out=coord_system_out,
+        coord_system_out=coord_frame,
         reproject_function=reproject_interp,
         threads=threads,
     )
+
+    index_src = resources.files("lwa_healpix") / "data" / "index.html"
+    shutil.copy2(index_src, output_directory / "index.html")
