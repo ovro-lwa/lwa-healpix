@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lwa-healpix"
+version = "0.1.0"
+description = "HEALPix reprojection and coadding tools for OVRO-LWA images"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Owens Valley Radio Observatory Long Wavelength Array"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "numpy>=1.23",
+    "astropy>=5.0",
+    "reproject>=0.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/ovro-lwa/lwa-healpix"
+"Bug Tracker" = "https://github.com/ovro-lwa/lwa-healpix/issues"
+
+[dependency-groups]
+test = [
+    "pytest>=7.0",
+]
+dev = [
+    {include-group = "test"},
+    "ruff>=0.1",
+]
