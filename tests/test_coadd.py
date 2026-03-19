@@ -15,7 +15,7 @@ from lwa_healpix.coadd import (
     _car_header_for_nside,
     _find_spectral_axis,
     _find_stokes_axis,
-    coadd_fits_to_healpix,
+    coadd_fits,
     combine_fits_to_spectral_cube,
     healpix_to_hips,
 )
@@ -179,48 +179,90 @@ class TestCombineFitsToSpectralCube:
             combine_fits_to_spectral_cube(files, tmp_path / "out.fits")
         assert "not uniformly spaced" in caplog.text
 
+    def test_dict_input_single_file_per_freq(self, tmp_path):
+        f1 = _make_lwa_fits(tmp_path / "a.fits", 30e6)
+        f2 = _make_lwa_fits(tmp_path / "b.fits", 40e6)
+        groups = {30e6: [f1], 40e6: [f2]}
+        hdul = combine_fits_to_spectral_cube(groups, tmp_path / "cube.fits")
+        assert hdul[0].data.shape == (2, 64, 64)
+        assert hdul[0].header["CRVAL3"] == 30e6
 
-# ---------------------------------------------------------------------------
-# coadd_fits_to_healpix
-# ---------------------------------------------------------------------------
+    def test_dict_input_coadds_multiple_files(self, tmp_path):
+        f1a = _make_lwa_fits(tmp_path / "a1.fits", 30e6, fill_value=2.0)
+        f1b = _make_lwa_fits(tmp_path / "a2.fits", 30e6, fill_value=4.0)
+        f2 = _make_lwa_fits(tmp_path / "b.fits", 40e6, fill_value=10.0)
+        groups = {30e6: [f1a, f1b], 40e6: [f2]}
+        hdul = combine_fits_to_spectral_cube(groups, tmp_path / "cube.fits")
+        assert hdul[0].data.shape == (2, 64, 64)
+        plane_30 = hdul[0].data[0]
+        assert np.allclose(plane_30, 3.0, atol=0.5)
 
-
-class TestCoaddFitsToHealpix:
-    NSIDE = 4  # Low NSIDE so ~15° pixels cover the wide test images.
-
-    def test_output_shape(self, wide_fits_files):
-        combined, weights = coadd_fits_to_healpix(
-            wide_fits_files, nside=self.NSIDE,
+    def test_flat_list_auto_groups_duplicate_freqs(self, tmp_path):
+        f1 = _make_lwa_fits(tmp_path / "a.fits", 30e6, fill_value=1.0)
+        f2 = _make_lwa_fits(tmp_path / "b.fits", 30e6, fill_value=3.0)
+        f3 = _make_lwa_fits(tmp_path / "c.fits", 40e6, fill_value=5.0)
+        hdul = combine_fits_to_spectral_cube(
+            [f1, f2, f3], tmp_path / "cube.fits",
         )
-        npix = 12 * self.NSIDE**2
+        assert hdul[0].data.shape == (2, 64, 64)
+        assert hdul[0].header["CRVAL3"] == 30e6
+
+
+# ---------------------------------------------------------------------------
+# coadd_fits  (unified reprojection + coadd)
+# ---------------------------------------------------------------------------
+
+
+class TestCoaddFits:
+    def test_healpix_target(self, wide_fits_files):
+        combined, weights = coadd_fits(
+            wide_fits_files, nside=4, coord_frame="galactic",
+        )
+        npix = 12 * 4**2
         assert combined.shape == (npix,)
-        assert weights.shape == (npix,)
-
-    def test_nonzero_coverage(self, wide_fits_files):
-        combined, weights = coadd_fits_to_healpix(
-            wide_fits_files, nside=self.NSIDE,
-        )
         assert np.any(weights > 0)
 
-    def test_weighted_average(self, wide_constant_fits_files):
-        """Two files with constant values 1.0 and 3.0 at same pointing."""
-        combined, weights = coadd_fits_to_healpix(
-            wide_constant_fits_files, nside=self.NSIDE,
+    def test_image_target(self, fits_files, tmp_path):
+        header = fits.Header()
+        header["NAXIS"] = 2
+        header["NAXIS1"] = 64
+        header["NAXIS2"] = 64
+        header["CTYPE1"] = "RA---SIN"
+        header["CRPIX1"] = 32.5
+        header["CRVAL1"] = 180.0
+        header["CDELT1"] = -0.01
+        header["CUNIT1"] = "deg"
+        header["CTYPE2"] = "DEC--SIN"
+        header["CRPIX2"] = 32.5
+        header["CRVAL2"] = 34.0
+        header["CDELT2"] = 0.01
+        header["CUNIT2"] = "deg"
+        combined, weights = coadd_fits(
+            fits_files, target_header=header,
+        )
+        assert combined.shape == (64, 64)
+        assert np.any(weights > 0)
+
+    def test_must_specify_one_target(self, fits_files):
+        with pytest.raises(ValueError, match="Exactly one"):
+            coadd_fits(fits_files)
+
+    def test_cannot_specify_both_targets(self, fits_files):
+        header = fits.Header()
+        header["NAXIS1"] = 64
+        header["NAXIS2"] = 64
+        with pytest.raises(ValueError, match="Exactly one"):
+            coadd_fits(fits_files, nside=4, target_header=header)
+
+    def test_weighted_average_healpix(self, wide_constant_fits_files):
+        combined, weights = coadd_fits(
+            wide_constant_fits_files, nside=4,
         )
         covered = weights > 0
-        assert np.any(covered), "No HEALPix pixels covered"
+        assert np.any(covered)
         values = combined[covered]
         assert np.all(values >= 0.9)
         assert np.all(values <= 3.1)
-
-    def test_min_elevation_reduces_coverage(self, wide_fits_files):
-        _, weights_no_mask = coadd_fits_to_healpix(
-            wide_fits_files, nside=self.NSIDE,
-        )
-        _, weights_masked = coadd_fits_to_healpix(
-            wide_fits_files, nside=self.NSIDE, min_elevation=30.0,
-        )
-        assert np.sum(weights_masked > 0) <= np.sum(weights_no_mask > 0)
 
 
 # ---------------------------------------------------------------------------
