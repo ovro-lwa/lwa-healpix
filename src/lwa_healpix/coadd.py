@@ -550,7 +550,7 @@ def fits_to_hips_cube(
     freq_values: list[float] | np.ndarray | None = None,
     min_elevation: float | None = None,
     tile_size: int = 512,
-    tile_depth: int = 1,
+    tile_depth: int = 2,
     level: int | None = None,
     level_depth: int | None = None,
     threads: bool = True,
@@ -591,7 +591,9 @@ def fits_to_hips_cube(
     tile_size : int, optional
         Spatial tile size in pixels.  Default is 512.
     tile_depth : int, optional
-        Depth of each tile along the spectral axis.  Default is 16.
+        Depth of each tile along the spectral axis.  Must be at least
+        2 (reproject requires this for lower-resolution tile
+        generation).  Default is 2.
     level : int or None, optional
         Maximum spatial HiPS order.  If *None*, ``reproject`` chooses
         automatically based on the input resolution.
@@ -604,7 +606,6 @@ def fits_to_hips_cube(
         Extra key/value pairs to write into the HiPS ``properties``
         file (e.g. ``obs_title``, ``creator_did``).
     """
-    import math
     import tempfile
 
     output_directory = Path(output_directory)
@@ -618,28 +619,13 @@ def fits_to_hips_cube(
         )
 
         cube_hdu = hdul[0]
-        nfreq = cube_hdu.data.shape[0]
 
-        if level_depth is None:
-            level_depth = max(0, math.ceil(math.log2(nfreq / tile_depth)))
-
-        # reproject_to_hips requires nfreq == tile_depth * 2^level_depth.
-        # Pad with NaN so every spectral tile slot has data.
-        required = tile_depth * (2 ** level_depth)
-        if nfreq < required:
-            pad_width = required - nfreq
-            padded = np.pad(
-                cube_hdu.data,
-                ((0, pad_width), (0, 0), (0, 0)),
-                constant_values=np.nan,
-            )
-            cube_hdu = fits.PrimaryHDU(data=padded, header=cube_hdu.header)
-            cube_hdu.header["NAXIS3"] = required
-            logger.info(
-                "Padded spectral axis from %d to %d channels "
-                "(tile_depth=%d, level_depth=%d)",
-                nfreq, required, tile_depth, level_depth,
-            )
+        # reproject's lower-resolution tile generation uses
+        # block_reduce(..., 2) along the spectral axis.  With
+        # tile_depth=1, that reduces 1→0 elements, causing a
+        # broadcast error.  Enforce a minimum of 2.
+        if tile_depth < 2:
+            tile_depth = 2
 
         reproject_to_hips(
             cube_hdu,
