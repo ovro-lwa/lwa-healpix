@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from importlib import resources
 from pathlib import Path
@@ -18,6 +19,7 @@ __all__ = [
     "coadd_fits",
     "combine_fits_to_spectral_cube",
     "fits_to_hips_cube",
+    "group_pipeline_files",
     "healpix_to_hips",
 ]
 
@@ -487,6 +489,57 @@ def combine_fits_to_spectral_cube(
         nfreq, nx, ny, output_path,
     )
     return hdul
+
+
+_FREQ_DIR_RE = re.compile(r"(\d+)\s*MHz", re.IGNORECASE)
+
+
+def group_pipeline_files(
+    file_paths: list[str | Path],
+) -> dict[float, list[Path]]:
+    """Group OVRO-LWA pipeline FITS files by frequency.
+
+    Parses the directory structure produced by the OVRO-LWA imaging
+    pipeline, where each file lives under a path like::
+
+        /lustre/pipeline/images/{lst}/{date}/Run_{id}/{freq}MHz/I/deep/{name}.fits
+
+    The frequency is extracted from the ``{freq}MHz`` directory
+    component.  Files at the same frequency (but different LSTs, dates,
+    or runs) are grouped together so they can be coadded by
+    :func:`combine_fits_to_spectral_cube` or :func:`coadd_fits`.
+
+    Parameters
+    ----------
+    file_paths : list of str or Path
+        Paths to FITS files produced by the pipeline.
+
+    Returns
+    -------
+    groups : dict[float, list[Path]]
+        Mapping from frequency in Hz to the list of files at that
+        frequency, sorted by ascending frequency.
+
+    Raises
+    ------
+    ValueError
+        If no ``{freq}MHz`` directory component can be found in a path.
+    """
+    groups: dict[float, list[Path]] = {}
+    for fpath in file_paths:
+        p = Path(fpath)
+        freq_hz: float | None = None
+        for part in p.parts:
+            m = _FREQ_DIR_RE.fullmatch(part)
+            if m:
+                freq_hz = float(m.group(1)) * 1e6
+                break
+        if freq_hz is None:
+            msg = f"Cannot determine frequency from path: {fpath}"
+            raise ValueError(msg)
+        groups.setdefault(freq_hz, []).append(p)
+
+    return dict(sorted(groups.items()))
 
 
 def fits_to_hips_cube(

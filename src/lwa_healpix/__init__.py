@@ -6,5 +6,6 @@ from .coadd import (
     coadd_fits,
     combine_fits_to_spectral_cube,
     fits_to_hips_cube,
+    group_pipeline_files,
     healpix_to_hips,
 )

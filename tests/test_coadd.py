@@ -17,6 +17,7 @@ from lwa_healpix.coadd import (
     _find_stokes_axis,
     coadd_fits,
     combine_fits_to_spectral_cube,
+    group_pipeline_files,
     healpix_to_hips,
 )
 
@@ -206,6 +207,70 @@ class TestCombineFitsToSpectralCube:
         )
         assert hdul[0].data.shape == (2, 64, 64)
         assert hdul[0].header["CRVAL3"] == 30e6
+
+
+# ---------------------------------------------------------------------------
+# coadd_fits  (unified reprojection + coadd)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# group_pipeline_files
+# ---------------------------------------------------------------------------
+
+
+class TestGroupPipelineFiles:
+    BASE = "/lustre/pipeline/images"
+
+    def _pipeline_path(self, lst: str, freq_mhz: int, date: str = "2024-12-18") -> str:
+        return (
+            f"{self.BASE}/{lst}/{date}/Run_20260227_014418/{freq_mhz}MHz/I/deep/"
+            f"{freq_mhz}MHz-I-Deep-Taper-Robust-0-image-{date.replace('-', '')}_123232.pbcorr.fits"
+        )
+
+    def test_groups_by_frequency(self):
+        paths = [
+            self._pipeline_path("10h", 41),
+            self._pipeline_path("10h", 55),
+            self._pipeline_path("10h", 73),
+        ]
+        groups = group_pipeline_files(paths)
+        assert list(groups.keys()) == [41e6, 55e6, 73e6]
+        assert len(groups[41e6]) == 1
+
+    def test_multiple_lst_same_freq(self):
+        paths = [
+            self._pipeline_path("10h", 41),
+            self._pipeline_path("14h", 41),
+            self._pipeline_path("18h", 41),
+            self._pipeline_path("10h", 55),
+        ]
+        groups = group_pipeline_files(paths)
+        assert len(groups[41e6]) == 3
+        assert len(groups[55e6]) == 1
+
+    def test_sorted_by_frequency(self):
+        paths = [
+            self._pipeline_path("10h", 73),
+            self._pipeline_path("10h", 41),
+            self._pipeline_path("10h", 55),
+        ]
+        groups = group_pipeline_files(paths)
+        assert list(groups.keys()) == [41e6, 55e6, 73e6]
+
+    def test_missing_freq_raises(self):
+        with pytest.raises(ValueError, match="Cannot determine frequency"):
+            group_pipeline_files(["/data/images/no_freq_here/image.fits"])
+
+    def test_returns_path_objects(self):
+        paths = [
+            self._pipeline_path("10h", 41),
+            self._pipeline_path("14h", 55),
+        ]
+        groups = group_pipeline_files(paths)
+        for file_list in groups.values():
+            for p in file_list:
+                assert isinstance(p, Path)
 
 
 # ---------------------------------------------------------------------------
