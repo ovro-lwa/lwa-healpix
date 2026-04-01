@@ -17,6 +17,7 @@ def _make_lwa_fits(
     ny: int = 64,
     pixel_scale: float = 0.01,
     fill_value: float | None = None,
+    noise_scale: float = 1.0,
     use_cd_matrix: bool = False,
 ) -> Path:
     """Write a minimal 4-axis FITS file mimicking OVRO-LWA output.
@@ -24,7 +25,7 @@ def _make_lwa_fits(
     Axes are (RA, Dec, Freq, Stokes) with length-1 Freq and Stokes.
     """
     rng = np.random.default_rng(int(freq_hz))
-    data = rng.standard_normal((1, 1, ny, nx)).astype(np.float32)
+    data = (rng.standard_normal((1, 1, ny, nx)) * noise_scale).astype(np.float32)
     if fill_value is not None:
         data[:] = fill_value
 

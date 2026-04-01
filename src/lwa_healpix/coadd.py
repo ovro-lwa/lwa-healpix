@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
-from astropy import wcs
 from astropy.io import fits
 from reproject import reproject_interp, reproject_to_healpix
 
-from .utils import _extract_2d, _find_spectral_axis, _pixel_elevations
+from .utils import (
+    _extract_2d,
+    _find_spectral_axis,
+    _pixel_elevations,
+    center_patch_rms_from_fits,
+)
 
 __all__ = [
     "coadd_fits",
@@ -18,6 +23,68 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _screen_paths_by_quality(
+    file_paths: list[str | Path],
+    *,
+    quality_max_rms: float | None,
+    quality_outlier_sigma: float | None,
+    quality_metric: Literal["std", "mad_sigma"],
+    quality_center_fraction: float,
+    quality_center_max_pixels: int | None,
+    min_elevation: float | None,
+) -> list[Path]:
+    """Return paths that pass center-patch quality checks."""
+    rows: list[tuple[Path, float]] = []
+    for fp in file_paths:
+        p = Path(fp)
+        rms = center_patch_rms_from_fits(
+            p,
+            center_fraction=quality_center_fraction,
+            center_max_pixels=quality_center_max_pixels,
+            metric=quality_metric,
+            min_elevation=min_elevation,
+        )
+        rows.append((p, rms))
+        if np.isnan(rms):
+            logger.warning(
+                "Quality screen: no finite pixels in center patch, rejecting %s",
+                p,
+            )
+
+    kept = [(p, r) for p, r in rows if not np.isnan(r)]
+
+    if quality_max_rms is not None:
+        nxt: list[tuple[Path, float]] = []
+        for p, r in kept:
+            if r > quality_max_rms:
+                logger.warning(
+                    "Quality screen: center-patch %s=%.6g exceeds quality_max_rms=%.6g, rejecting %s",
+                    quality_metric, r, quality_max_rms, p,
+                )
+            else:
+                nxt.append((p, r))
+        kept = nxt
+
+    if quality_outlier_sigma is not None and len(kept) > 0:
+        rvals = np.array([r for _, r in kept], dtype=np.float64)
+        med = float(np.median(rvals))
+        mad = float(np.median(np.abs(rvals - med)))
+        thresh = med + quality_outlier_sigma * 1.4826 * mad
+        nxt = []
+        for p, r in kept:
+            if r > thresh:
+                logger.warning(
+                    "Quality screen: center-patch %s=%.6g above outlier threshold %.6g "
+                    "(median=%.6g), rejecting %s",
+                    quality_metric, r, thresh, med, p,
+                )
+            else:
+                nxt.append((p, r))
+        kept = nxt
+
+    return [p for p, _ in kept]
 
 
 def coadd_fits(
@@ -28,6 +95,11 @@ def coadd_fits(
     coord_frame: str = "galactic",
     nested: bool = False,
     min_elevation: float | None = None,
+    quality_max_rms: float | None = None,
+    quality_outlier_sigma: float | None = None,
+    quality_metric: Literal["std", "mad_sigma"] = "std",
+    quality_center_fraction: float = 0.25,
+    quality_center_max_pixels: int | None = 512,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reproject FITS images onto a common grid and coadd them.
 
@@ -41,6 +113,15 @@ def coadd_fits(
     * **nside** — reproject onto a HEALPix grid.  Returns a 1-D map.
     * **target_header** — reproject onto a 2-D image grid described by
       the FITS header.  Returns a 2-D array.
+
+    Optional **quality screening** (when ``quality_max_rms`` and/or
+    ``quality_outlier_sigma`` is set) runs *before* reprojection: it
+    opens each file with memory mapping, computes dispersion (std or
+    MAD-based scale) on a **central patch** only, and drops files that
+    fail the thresholds.  This avoids expensive full reprojection of
+    clearly bad images.  Units for ``quality_max_rms`` match the image
+    data (see ``BUNIT``).  When ``min_elevation`` is set, the same
+    blanking is applied to the central patch before the metric.
 
     Parameters
     ----------
@@ -62,6 +143,19 @@ def coadd_fits(
         this elevation are blanked before reprojection.  Elevation is
         measured as the angular distance from the image reference point
         (assumed to be the local zenith).
+    quality_max_rms : float or None, optional
+        If set, reject images whose center-patch dispersion exceeds this
+        value.
+    quality_outlier_sigma : float or None, optional
+        If set, reject images whose center-patch dispersion exceeds
+        ``median + sigma * 1.4826 * MAD`` over the surviving batch.
+    quality_metric : {\"std\", \"mad_sigma\"}, optional
+        Dispersion statistic on the center patch (default ``\"std\"``).
+    quality_center_fraction : float, optional
+        Linear fraction of each spatial axis used for the center patch
+        (default ``0.25``).
+    quality_center_max_pixels : int or None, optional
+        Maximum patch size in pixels per axis (default ``512``).
 
     Returns
     -------
@@ -78,6 +172,21 @@ def coadd_fits(
         msg = "At least one FITS file path is required"
         raise ValueError(msg)
 
+    paths = list(file_paths)
+    if quality_max_rms is not None or quality_outlier_sigma is not None:
+        paths = _screen_paths_by_quality(
+            paths,
+            quality_max_rms=quality_max_rms,
+            quality_outlier_sigma=quality_outlier_sigma,
+            quality_metric=quality_metric,
+            quality_center_fraction=quality_center_fraction,
+            quality_center_max_pixels=quality_center_max_pixels,
+            min_elevation=min_elevation,
+        )
+        if not paths:
+            msg = "All input images were rejected by quality screening"
+            raise ValueError(msg)
+
     if target_header is not None:
         shape_out = (
             int(target_header["NAXIS2"]),
@@ -87,7 +196,7 @@ def coadd_fits(
     sum_data: np.ndarray | None = None
     sum_weight: np.ndarray | None = None
 
-    for fpath in file_paths:
+    for fpath in paths:
         hdu = fits.open(fpath)[0]
         data_2d, wcs_2d = _extract_2d(hdu)
 
@@ -128,6 +237,11 @@ def combine_fits_to_spectral_cube(
     *,
     freq_values: list[float] | np.ndarray | None = None,
     min_elevation: float | None = None,
+    quality_max_rms: float | None = None,
+    quality_outlier_sigma: float | None = None,
+    quality_metric: Literal["std", "mad_sigma"] = "std",
+    quality_center_fraction: float = 0.25,
+    quality_center_max_pixels: int | None = 512,
 ) -> fits.HDUList:
     """Combine FITS images into a spectral cube, with optional coadding.
 
@@ -162,6 +276,17 @@ def combine_fits_to_spectral_cube(
     min_elevation : float or None, optional
         Minimum elevation in degrees.  Passed through to
         :func:`coadd_fits` for per-channel coadding.
+    quality_max_rms : float or None, optional
+        Passed to :func:`coadd_fits` when coadding multiple files per
+        frequency.
+    quality_outlier_sigma : float or None, optional
+        Passed to :func:`coadd_fits`.
+    quality_metric : {\"std\", \"mad_sigma\"}, optional
+        Passed to :func:`coadd_fits`.
+    quality_center_fraction : float, optional
+        Passed to :func:`coadd_fits`.
+    quality_center_max_pixels : int or None, optional
+        Passed to :func:`coadd_fits`.
 
     Returns
     -------
@@ -246,6 +371,11 @@ def combine_fits_to_spectral_cube(
                 group,
                 target_header=ref_target,
                 min_elevation=min_elevation,
+                quality_max_rms=quality_max_rms,
+                quality_outlier_sigma=quality_outlier_sigma,
+                quality_metric=quality_metric,
+                quality_center_fraction=quality_center_fraction,
+                quality_center_max_pixels=quality_center_max_pixels,
             )
         cube[i] = plane
 

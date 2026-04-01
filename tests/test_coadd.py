@@ -191,3 +191,89 @@ class TestCoaddFits:
         values = combined[covered]
         assert np.all(values >= 0.9)
         assert np.all(values <= 3.1)
+
+# ---------------------------------------------------------------------------
+# Quality screening (coadd_fits)
+# ---------------------------------------------------------------------------
+
+
+def _image_target_header(nx: int = 64, ny: int = 64) -> fits.Header:
+    header = fits.Header()
+    header["NAXIS"] = 2
+    header["NAXIS1"] = nx
+    header["NAXIS2"] = ny
+    header["CTYPE1"] = "RA---SIN"
+    header["CRPIX1"] = (nx + 1) / 2.0
+    header["CRVAL1"] = 180.0
+    header["CDELT1"] = -0.01
+    header["CUNIT1"] = "deg"
+    header["CTYPE2"] = "DEC--SIN"
+    header["CRPIX2"] = (ny + 1) / 2.0
+    header["CRVAL2"] = 34.0
+    header["CDELT2"] = 0.01
+    header["CUNIT2"] = "deg"
+    return header
+
+
+class TestCoaddFitsQuality:
+    def test_quality_max_rms_excludes_noisy_file(self, tmp_path):
+        quiet = _make_lwa_fits(tmp_path / "q.fits", 30e6, fill_value=1.0)
+        noisy = _make_lwa_fits(tmp_path / "n.fits", 30e6, noise_scale=1.0)
+        hdr = _image_target_header()
+        combined, weights = coadd_fits(
+            [quiet, noisy],
+            target_header=hdr,
+            quality_max_rms=0.05,
+        )
+        assert np.all(weights > 0)
+        assert np.allclose(combined[weights > 0], 1.0, atol=0.05)
+
+    def test_quality_all_rejected_raises(self, tmp_path):
+        a = _make_lwa_fits(tmp_path / "a.fits", 30e6, noise_scale=1.0)
+        b = _make_lwa_fits(tmp_path / "b.fits", 40e6, noise_scale=1.0)
+        hdr = _image_target_header()
+        with pytest.raises(ValueError, match="All input images were rejected"):
+            coadd_fits(
+                [a, b],
+                target_header=hdr,
+                quality_max_rms=1e-12,
+            )
+
+    def test_quality_outlier_sigma_rejects_spike(self, tmp_path):
+        files = [
+            _make_lwa_fits(tmp_path / f"f{i}.fits", 30e6 + i, fill_value=0.0)
+            for i in range(4)
+        ]
+        files.append(
+            _make_lwa_fits(tmp_path / "out.fits", 99e6, noise_scale=80.0),
+        )
+        hdr = _image_target_header()
+        combined, weights = coadd_fits(
+            files,
+            target_header=hdr,
+            quality_outlier_sigma=2.5,
+        )
+        assert np.all(weights > 0)
+        assert np.allclose(combined[weights > 0], 0.0, atol=0.05)
+
+
+class TestCombineFitsQuality:
+    def test_dict_groups_respect_quality_max_rms(self, tmp_path):
+        g30 = [
+            _make_lwa_fits(tmp_path / "30a.fits", 30e6, fill_value=2.0),
+            _make_lwa_fits(tmp_path / "30b.fits", 30e6, noise_scale=1.0),
+        ]
+        g40 = [
+            _make_lwa_fits(tmp_path / "40a.fits", 40e6, fill_value=3.0),
+            _make_lwa_fits(tmp_path / "40b.fits", 40e6, noise_scale=1.0),
+        ]
+        groups = {30e6: g30, 40e6: g40}
+        hdul = combine_fits_to_spectral_cube(
+            groups,
+            tmp_path / "cube.fits",
+            quality_max_rms=0.1,
+        )
+        d = hdul[0].data
+        assert np.allclose(d[0], 2.0, atol=0.05)
+        assert np.allclose(d[1], 3.0, atol=0.05)
+
