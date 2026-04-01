@@ -74,6 +74,10 @@ def coadd_fits(
         msg = "Exactly one of 'nside' or 'target_header' must be given"
         raise ValueError(msg)
 
+    if not file_paths:
+        msg = "At least one FITS file path is required"
+        raise ValueError(msg)
+
     if target_header is not None:
         shape_out = (
             int(target_header["NAXIS2"]),

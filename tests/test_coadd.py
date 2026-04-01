@@ -178,6 +178,10 @@ class TestCoaddFits:
         with pytest.raises(ValueError, match="Exactly one"):
             coadd_fits(fits_files, nside=4, target_header=header)
 
+    def test_empty_file_list_raises(self):
+        with pytest.raises(ValueError, match="At least one FITS"):
+            coadd_fits([], nside=4)
+
     def test_weighted_average_healpix(self, wide_constant_fits_files):
         combined, weights = coadd_fits(
             wide_constant_fits_files, nside=4,
