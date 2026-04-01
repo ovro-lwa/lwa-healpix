@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import shutil
 from importlib import resources
 from pathlib import Path
@@ -198,6 +200,11 @@ def fits_to_hips_cube(
     coord_frame: str = "galactic",
     freq_values: list[float] | np.ndarray | None = None,
     min_elevation: float | None = None,
+    quality_max_rms: float | None = None,
+    quality_outlier_sigma: float | None = None,
+    quality_metric: Literal["std", "mad_sigma"] = "std",
+    quality_center_fraction: float = 0.25,
+    quality_center_max_pixels: int | None = 512,
     tile_size: int = 512,
     tile_depth: int = 2,
     level: int | None = None,
@@ -240,6 +247,16 @@ def fits_to_hips_cube(
         Minimum elevation in degrees.  Passed through to
         :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube` for
         per-channel coadding.
+    quality_max_rms : float or None, optional
+        Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
+    quality_outlier_sigma : float or None, optional
+        Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
+    quality_metric : {"std", "mad_sigma"}, optional
+        Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
+    quality_center_fraction : float, optional
+        Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
+    quality_center_max_pixels : int or None, optional
+        Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
     tile_size : int, optional
         Spatial tile size in pixels.  Default is 512.
     tile_depth : int, optional
@@ -268,6 +285,11 @@ def fits_to_hips_cube(
             file_paths, cube_path,
             freq_values=freq_values,
             min_elevation=min_elevation,
+            quality_max_rms=quality_max_rms,
+            quality_outlier_sigma=quality_outlier_sigma,
+            quality_metric=quality_metric,
+            quality_center_fraction=quality_center_fraction,
+            quality_center_max_pixels=quality_center_max_pixels,
         )
 
         cube_hdu = hdul[0]

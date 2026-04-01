@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from astropy import wcs
@@ -11,6 +12,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 __all__ = [
+    "center_patch_rms_from_fits",
     "group_pipeline_files",
 ]
 
@@ -104,6 +106,103 @@ def _extract_2d(hdu: fits.PrimaryHDU) -> tuple[np.ndarray, wcs.WCS]:
     data = np.take(np.take(hdu.data, 0, axis=ax_hi), 0, axis=ax_lo)
     wcs_2d = wcs.WCS(header).celestial
     return data, wcs_2d
+
+
+def _axis_center_slice(n: int, fraction: float, max_pixels: int | None) -> tuple[int, int]:
+    """Return ``start, stop`` for a centered slice along one axis of length *n*."""
+    w = max(1, int(n * fraction))
+    if max_pixels is not None:
+        w = min(w, max_pixels)
+    w = min(w, n)
+    w = max(1, w)
+    start = (n - w) // 2
+    return start, start + w
+
+
+def _rms_from_finite_values(
+    patch: np.ndarray,
+    metric: str,
+) -> float:
+    """Std or robust MAD×1.4826 on finite values."""
+    v = patch[np.isfinite(patch)].astype(np.float64, copy=False).ravel()
+    if v.size == 0:
+        return float("nan")
+    if metric == "std":
+        return float(np.std(v))
+    med = float(np.median(v))
+    mad = float(np.median(np.abs(v - med)))
+    return 1.4826 * mad
+
+
+def _pixel_elevations_window(
+    wcs_2d: wcs.WCS,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+) -> np.ndarray:
+    """Elevation (deg) for a pixel window; same zenith model as `_pixel_elevations`."""
+    y, x = np.mgrid[y0:y1, x0:x1]
+    sky = wcs_2d.pixel_to_world(x, y)
+    center = SkyCoord(
+        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
+        unit="deg", frame=sky.frame.name,
+    )
+    return 90.0 - sky.separation(center).deg
+
+
+def center_patch_rms_from_fits(
+    path: str | Path,
+    *,
+    center_fraction: float = 0.25,
+    center_max_pixels: int | None = 512,
+    metric: str = "std",
+    min_elevation: float | None = None,
+) -> float:
+    """Cheap quality metric: dispersion on a central patch only (memmap slice).
+
+    Reads only the central region of the spatial plane.  Supports 2-D images
+    and 4-D LWA-style arrays whose last two axes are spatial.
+    """
+    path = Path(path)
+    with fits.open(path, memmap=True) as hdul:
+        hdu = hdul[0]
+        hdr = hdu.header
+        data = hdu.data
+        if data is None:
+            return float("nan")
+
+        naxis1 = int(hdr.get("NAXIS1", 1))
+        naxis2 = int(hdr.get("NAXIS2", 1))
+
+        if data.ndim == 2:
+            ny, nx = data.shape
+            sy, ey = _axis_center_slice(ny, center_fraction, center_max_pixels)
+            sx, ex = _axis_center_slice(nx, center_fraction, center_max_pixels)
+            patch = np.asarray(data[sy:ey, sx:ex])
+            wcs_2d = wcs.WCS(hdr).celestial
+        elif data.ndim == 4:
+            ny, nx = naxis2, naxis1
+            sy, ey = _axis_center_slice(ny, center_fraction, center_max_pixels)
+            sx, ex = _axis_center_slice(nx, center_fraction, center_max_pixels)
+            patch = np.asarray(data[0, 0, sy:ey, sx:ex])
+            wcs_2d = wcs.WCS(hdr).celestial
+        elif data.ndim == 3:
+            ny, nx = data.shape[-2], data.shape[-1]
+            sy, ey = _axis_center_slice(ny, center_fraction, center_max_pixels)
+            sx, ex = _axis_center_slice(nx, center_fraction, center_max_pixels)
+            patch = np.asarray(data[0, sy:ey, sx:ex])
+            wcs_2d = wcs.WCS(hdr).celestial
+        else:
+            return float("nan")
+
+        if min_elevation is not None:
+            elev = _pixel_elevations_window(wcs_2d, sy, ey, sx, ex)
+            patch = patch.copy()
+            patch[elev < min_elevation] = np.nan
+
+        return _rms_from_finite_values(patch, metric)
+
 
 
 def group_pipeline_files(
