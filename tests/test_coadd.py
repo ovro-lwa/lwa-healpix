@@ -167,6 +167,32 @@ class TestCoaddFits:
         assert combined.shape == (64, 64)
         assert np.any(weights > 0)
 
+    def test_target_header_may_include_extra_freq_stokes_axes(self, tmp_path):
+        """NAXIS=4 target headers must not break reproject (2-D celestial grid)."""
+        f1 = _make_lwa_fits(tmp_path / "a.fits", 30e6, fill_value=1.0)
+        f2 = _make_lwa_fits(tmp_path / "b.fits", 40e6, fill_value=1.0)
+        h4 = fits.Header()
+        h4["NAXIS"] = 4
+        h4["NAXIS1"] = h4["NAXIS2"] = 64
+        h4["NAXIS3"] = h4["NAXIS4"] = 1
+        h4["CTYPE1"] = "RA---SIN"
+        h4["CTYPE2"] = "DEC--SIN"
+        h4["CTYPE3"] = "FREQ"
+        h4["CTYPE4"] = "STOKES"
+        h4["CRPIX1"] = h4["CRPIX2"] = 32.5
+        h4["CRPIX3"] = h4["CRPIX4"] = 1.0
+        h4["CRVAL1"] = 180.0
+        h4["CRVAL2"] = 34.0
+        h4["CRVAL3"] = 30e6
+        h4["CRVAL4"] = 1.0
+        h4["CDELT1"] = -0.01
+        h4["CDELT2"] = 0.01
+        h4["CDELT3"] = 1e6
+        h4["CDELT4"] = 1.0
+        combined, weights = coadd_fits([f1, f2], target_header=h4)
+        assert combined.shape == (64, 64)
+        assert np.allclose(combined[weights > 0], 1.0, atol=0.01)
+
     def test_must_specify_one_target(self, fits_files):
         with pytest.raises(ValueError, match="Exactly one"):
             coadd_fits(fits_files)

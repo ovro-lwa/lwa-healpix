@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from astropy import wcs as astropy_wcs
 from astropy.io import fits
 from reproject import reproject_interp, reproject_to_healpix
 
@@ -211,8 +212,12 @@ def coadd_fits(
                 nside=nside, nested=nested,
             )
         else:
+            # Use the 2-D celestial WCS for the output grid.  Passing a Header
+            # with NAXIS>2 makes ``reproject`` build a multi-dimensional output
+            # WCS, which does not match the 2-D input from ``_extract_2d``.
+            wcs_out = astropy_wcs.WCS(target_header).celestial
             reprojected, footprint = reproject_interp(
-                (data_2d, wcs_2d), target_header,
+                (data_2d, wcs_2d), wcs_out,
                 shape_out=shape_out,
             )
 
