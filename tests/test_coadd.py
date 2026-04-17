@@ -14,6 +14,7 @@ from conftest import _make_lwa_fits
 from lwa_healpix.coadd import (
     coadd_fits,
     combine_fits_to_spectral_cube,
+    temporal_std_healpix,
 )
 
 
@@ -217,6 +218,54 @@ class TestCoaddFits:
         values = combined[covered]
         assert np.all(values >= 0.9)
         assert np.all(values <= 3.1)
+
+
+# ---------------------------------------------------------------------------
+# temporal_std_healpix
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalStdHealpix:
+    def test_output_shape_and_constant_time_series(self, tmp_path):
+        nside = 4
+        npix = 12 * nside**2
+        files = [
+            _make_lwa_fits(
+                tmp_path / f"w{i}.fits",
+                30e6 + i * 1e6,
+                fill_value=2.0,
+                nx=64,
+                ny=64,
+                pixel_scale=0.5,
+            )
+            for i in range(3)
+        ]
+        std, n_valid = temporal_std_healpix(files, nside=nside)
+        assert std.shape == (npix,)
+        assert n_valid.shape == (npix,)
+        ok = n_valid >= 2
+        assert np.any(ok)
+        assert np.allclose(std[ok], 0.0, atol=1e-5)
+
+    def test_std_matches_numpy_for_two_levels(self, tmp_path):
+        nside = 4
+        f1 = _make_lwa_fits(
+            tmp_path / "a.fits", 30e6, fill_value=1.0,
+            nx=64, ny=64, pixel_scale=0.5,
+        )
+        f2 = _make_lwa_fits(
+            tmp_path / "b.fits", 40e6, fill_value=5.0,
+            nx=64, ny=64, pixel_scale=0.5,
+        )
+        std, n_valid = temporal_std_healpix([f1, f2], nside=nside)
+        ipix = int(np.argmax(n_valid))
+        assert n_valid[ipix] == 2
+        assert np.isclose(std[ipix], np.std([1.0, 5.0], ddof=1))
+
+    def test_empty_paths_raises(self):
+        with pytest.raises(ValueError, match="At least one"):
+            temporal_std_healpix([], nside=4)
+
 
 # ---------------------------------------------------------------------------
 # Quality screening (coadd_fits)

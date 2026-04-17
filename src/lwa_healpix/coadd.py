@@ -21,6 +21,7 @@ from .utils import (
 __all__ = [
     "coadd_fits",
     "combine_fits_to_spectral_cube",
+    "temporal_std_healpix",
 ]
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,145 @@ def _screen_paths_by_quality(
         kept = nxt
 
     return [p for p, _ in kept]
+
+
+def _std_from_welford_m2(n: np.ndarray, m2: np.ndarray, ddof: int) -> np.ndarray:
+    """Per-pixel sample standard deviation from Welford *n* and *m2*."""
+    nf = n.astype(np.float64, copy=False)
+    m2f = m2.astype(np.float64, copy=False)
+    with np.errstate(invalid="ignore"):
+        variance = np.where(nf > ddof, m2f / (nf - ddof), np.nan)
+    return np.sqrt(variance)
+
+
+def temporal_std_healpix(
+    file_paths: list[str | Path],
+    *,
+    nside: int,
+    coord_frame: str = "galactic",
+    nested: bool = False,
+    min_elevation: float | None = None,
+    quality_max_rms: float | None = None,
+    quality_outlier_sigma: float | None = None,
+    quality_metric: Literal["std", "mad_sigma"] = "std",
+    quality_center_fraction: float = 0.25,
+    quality_center_max_pixels: int | None = 512,
+    ddof: int = 1,
+    footprint_threshold: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reproject FITS images to HEALPix and compute temporal standard deviation per pixel.
+
+    Each input is treated as one time step.  For every HEALPix pixel, the
+    sample standard deviation across time is computed from all valid
+    samples at that pixel.  A sample at time *t* is valid if
+    ``footprint[t, i] > footprint_threshold`` and the reprojected value
+    is finite.  NaNs are not converted to zero before this test.
+
+    Ordering matches :func:`reproject.reproject_to_healpix`: RING when
+    *nested* is ``False``, NESTED when ``True``.
+
+    Parameters
+    ----------
+    file_paths : list of str or Path
+        Paths to FITS files (one time step per file), in chronological
+        or desired order.
+    nside : int
+        HEALPix ``nside`` parameter.
+    coord_frame : str, optional
+        Output coordinate frame (e.g. ``"galactic"``).
+    nested : bool, optional
+        If ``True``, NESTED pixel ordering; otherwise RING.
+    min_elevation : float or None, optional
+        Minimum elevation in degrees; pixels below are set to NaN before
+        reprojection, as in :func:`coadd_fits`.
+    quality_max_rms : float or None, optional
+        If set, reject files by center-patch dispersion before
+        reprojection (see :func:`coadd_fits`).
+    quality_outlier_sigma : float or None, optional
+        If set, reject outlier files by center-patch dispersion (see
+        :func:`coadd_fits`).
+    quality_metric : {\"std\", \"mad_sigma\"}, optional
+        Metric for quality screening.
+    quality_center_fraction : float, optional
+        Center-patch fraction for quality screening.
+    quality_center_max_pixels : int or None, optional
+        Maximum center-patch size for quality screening.
+    ddof : int, optional
+        Passed to the variance divisor as ``n - ddof`` (default ``1``
+        for sample standard deviation; use ``0`` for population).
+    footprint_threshold : float, optional
+        A time step contributes at pixel *i* only if
+        ``footprint[i]`` is strictly greater than this value.
+
+    Returns
+    -------
+    std : numpy.ndarray
+        One-dimensional array of shape ``(12 * nside ** 2,)``, standard
+        deviation in time at each HEALPix pixel.  NaN where fewer than
+        ``ddof + 1`` valid samples exist at that pixel.
+    n_valid : numpy.ndarray
+        Integer counts of valid time steps per pixel, same shape as *std*.
+    """
+    if ddof < 0:
+        msg = "ddof must be non-negative"
+        raise ValueError(msg)
+
+    if nside < 1:
+        msg = "nside must be >= 1"
+        raise ValueError(msg)
+
+    npix = 12 * nside**2
+
+    if not file_paths:
+        msg = "At least one FITS file path is required"
+        raise ValueError(msg)
+
+    paths = list(file_paths)
+    if quality_max_rms is not None or quality_outlier_sigma is not None:
+        paths = _screen_paths_by_quality(
+            paths,
+            quality_max_rms=quality_max_rms,
+            quality_outlier_sigma=quality_outlier_sigma,
+            quality_metric=quality_metric,
+            quality_center_fraction=quality_center_fraction,
+            quality_center_max_pixels=quality_center_max_pixels,
+            min_elevation=min_elevation,
+        )
+        if not paths:
+            msg = "All input images were rejected by quality screening"
+            raise ValueError(msg)
+
+    n_acc = np.zeros(npix, dtype=np.int64)
+    mean_acc = np.zeros(npix, dtype=np.float64)
+    m2_acc = np.zeros(npix, dtype=np.float64)
+
+    for fpath in paths:
+        hdu = fits.open(fpath)[0]
+        data_2d, wcs_2d = _extract_2d(hdu)
+
+        if min_elevation is not None:
+            elevation = _pixel_elevations(wcs_2d, data_2d.shape)
+            data_2d = data_2d.copy()
+            data_2d[elevation < min_elevation] = np.nan
+
+        reprojected, footprint = reproject_to_healpix(
+            (data_2d, wcs_2d), coord_frame,
+            nside=nside, nested=nested,
+        )
+
+        rp = np.asarray(reprojected, dtype=np.float64).ravel()
+        fp = np.asarray(footprint, dtype=np.float64).ravel()
+        mask = (fp > footprint_threshold) & np.isfinite(rp)
+
+        delta = rp - mean_acc
+        mean_new = np.where(mask, mean_acc + delta / (n_acc + 1), mean_acc)
+        delta2 = rp - mean_new
+        m2_acc = np.where(mask, m2_acc + delta * delta2, m2_acc)
+        n_acc = np.where(mask, n_acc + 1, n_acc)
+        mean_acc = mean_new
+
+    std_map = _std_from_welford_m2(n_acc, m2_acc, ddof)
+    return std_map, n_acc
 
 
 def coadd_fits(

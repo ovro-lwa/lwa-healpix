@@ -2,6 +2,6 @@
 
 __version__ = "0.1.0"
 
-from .coadd import coadd_fits, combine_fits_to_spectral_cube
+from .coadd import coadd_fits, combine_fits_to_spectral_cube, temporal_std_healpix
 from .hips import fits_to_hips, fits_to_hips_cube, healpix_to_hips
 from .utils import center_patch_rms_from_fits, group_pipeline_files
