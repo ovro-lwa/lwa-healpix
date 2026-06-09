@@ -15,6 +15,7 @@ from lwa_healpix.utils import (
     _find_spectral_axis,
     _find_stokes_axis,
     group_pipeline_files,
+    lst_hour_from_path,
 )
 
 
@@ -189,3 +190,24 @@ class TestGroupPipelineFiles:
             [tmp_path / "x.fits", tmp_path / "y.fits"],
         )
         assert list(groups.keys()) == [41e6, 66e6]
+
+
+# ---------------------------------------------------------------------------
+# lst_hour_from_path
+# ---------------------------------------------------------------------------
+
+
+class TestLstHourFromPath:
+    BASE = "/lustre/pipeline/images"
+
+    def test_parses_lst_hour(self):
+        path = f"{self.BASE}/10h/2024-12-18/Run_x/41MHz/I/deep/image.fits"
+        assert lst_hour_from_path(path) == 10
+
+    def test_case_insensitive(self):
+        path = f"{self.BASE}/14H/2024-12-18/Run_x/41MHz/I/deep/image.fits"
+        assert lst_hour_from_path(path) == 14
+
+    def test_missing_lst_raises(self):
+        with pytest.raises(ValueError, match="Cannot determine LST hour"):
+            lst_hour_from_path("/data/images/41MHz/image.fits")

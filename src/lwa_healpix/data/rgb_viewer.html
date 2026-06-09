@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0">
+  <style>
+    body { margin: 0; }
+    #aladin-lite { width: 100%; height: 100vh; }
+    #controls {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: rgba(255,255,255,0.92); padding: 12px; border-radius: 6px;
+      font-family: system-ui, sans-serif; font-size: 13px;
+    }
+    .channel { margin-bottom: 8px; }
+    .channel h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; }
+    .row { display: flex; gap: 6px; align-items: center; margin-bottom: 3px; }
+    .row label { width: 36px; text-align: right; }
+    .row input { width: 70px; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div class="channel">
+      <h4 style="color:#c00">Red</h4>
+      <div class="row">
+        <label>Min</label><input id="rMin" type="number" step="any" value="-1">
+        <label>Max</label><input id="rMax" type="number" step="any" value="10">
+      </div>
+    </div>
+    <div class="channel">
+      <h4 style="color:#080">Green</h4>
+      <div class="row">
+        <label>Min</label><input id="gMin" type="number" step="any" value="-1">
+        <label>Max</label><input id="gMax" type="number" step="any" value="10">
+      </div>
+    </div>
+    <div class="channel">
+      <h4 style="color:#06c">Blue</h4>
+      <div class="row">
+        <label>Min</label><input id="bMin" type="number" step="any" value="-1">
+        <label>Max</label><input id="bMax" type="number" step="any" value="10">
+      </div>
+    </div>
+    <button id="applyBtn" type="button">Apply cuts</button>
+  </div>
+  <div id="error" style="display:none;position:absolute;top:10px;left:10px;z-index:1001;
+    background:#fee;color:#900;padding:10px;border-radius:4px;max-width:60%;font:13px system-ui,sans-serif;"></div>
+  <div id="aladin-lite"></div>
+  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"></script>
+  <script>
+    const p = new URLSearchParams(location.search);
+    const paths = {
+      red:   './' + p.get('red')   + '/',
+      green: './' + p.get('green') + '/',
+      blue:  './' + p.get('blue')  + '/',
+    };
+    const layerNames = { red: 'Red', green: 'Green', blue: 'Blue' };
+    let layers = {};
+    let aladin = null;
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.style.display = 'block';
+      console.error(msg);
+    }
+
+    function readCut(id, fallback) {
+      const v = parseFloat(document.getElementById(id).value);
+      return Number.isFinite(v) ? v : fallback;
+    }
+
+    function getCuts() {
+      return {
+        red:   [readCut('rMin', -1), readCut('rMax', 10)],
+        green: [readCut('gMin', -1), readCut('gMax', 10)],
+        blue:  [readCut('bMin', -1), readCut('bMax', 10)],
+      };
+    }
+
+    function setInputCuts(cuts) {
+      document.getElementById('rMin').value = cuts.red[0];
+      document.getElementById('rMax').value = cuts.red[1];
+      document.getElementById('gMin').value = cuts.green[0];
+      document.getElementById('gMax').value = cuts.green[1];
+      document.getElementById('bMin').value = cuts.blue[0];
+      document.getElementById('bMax').value = cuts.blue[1];
+    }
+
+    async function fetchHipsCut(url) {
+      try {
+        const resp = await fetch(url + 'properties');
+        if (!resp.ok) return null;
+        const text = await resp.text();
+        const match = text.match(/hips_pixel_cut\s*=\s*([-\d.eE+]+)\s+([-\d.eE+]+)/);
+        if (match) {
+          return [parseFloat(match[1]), parseFloat(match[2])];
+        }
+      } catch (err) {
+        console.warn('Could not read properties for', url, err);
+      }
+      return null;
+    }
+
+    async function loadDefaultCuts() {
+      const fallback = {
+        red:   [-1, 10],
+        green: [-1, 10],
+        blue:  [-1, 10],
+      };
+      const entries = await Promise.all(
+        Object.entries(paths).map(async ([ch, url]) => {
+          const cut = await fetchHipsCut(url);
+          return [ch, cut || fallback[ch]];
+        }),
+      );
+      return Object.fromEntries(entries);
+    }
+
+    function makeHiPS(url, color, lo, hi, additive) {
+      return A.imageHiPS(url, {
+        name: layerNames[color],
+        imgFormat: 'fits',
+        colormap: color,
+        stretch: 'asinh',
+        minCut: lo,
+        maxCut: hi,
+        additive: additive,
+      });
+    }
+
+    function resolveLayer(color) {
+      if (!aladin) return layers[color];
+      if (color === 'green') {
+        return aladin.getBaseImageLayer() || layers.green;
+      }
+      return aladin.getOverlayImageLayer(layerNames[color]) || layers[color];
+    }
+
+    function applyCuts() {
+      const cfg = getCuts();
+      for (const color of ['red', 'green', 'blue']) {
+        const survey = resolveLayer(color);
+        if (!survey || typeof survey.setCuts !== 'function') {
+          console.warn('No survey layer for', color);
+          continue;
+        }
+        const [lo, hi] = cfg[color];
+        if (Number.isFinite(lo) && Number.isFinite(hi)) {
+          survey.setCuts(lo, hi);
+        }
+      }
+    }
+
+    async function init() {
+      if (!p.get('red') || !p.get('green') || !p.get('blue')) {
+        showError('Missing red, green, or blue HiPS path in URL query parameters.');
+        return;
+      }
+
+      try {
+        await A.init;
+
+        const defaultCuts = await loadDefaultCuts();
+        setInputCuts(defaultCuts);
+        const cuts = getCuts();
+
+        layers.green = makeHiPS(paths.green, 'green', cuts.green[0], cuts.green[1], false);
+        layers.red   = makeHiPS(paths.red,   'red',   cuts.red[0],   cuts.red[1],   true);
+        layers.blue  = makeHiPS(paths.blue,  'blue',  cuts.blue[0],  cuts.blue[1],  true);
+
+        aladin = A.aladin('#aladin-lite', {
+          target: '0 +40',
+          fov: 150,
+          survey: layers.green,
+        });
+
+        aladin.setOverlayImageLayer(layers.red, layerNames.red);
+        aladin.setOverlayImageLayer(layers.blue, layerNames.blue);
+
+        applyCuts();
+
+        document.getElementById('applyBtn').addEventListener('click', applyCuts);
+        for (const id of ['rMin', 'rMax', 'gMin', 'gMax', 'bMin', 'bMax']) {
+          document.getElementById(id).addEventListener('change', applyCuts);
+        }
+      } catch (err) {
+        showError('Aladin Lite failed to initialize: ' + err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -16,28 +16,105 @@ from .utils import (
     _find_spectral_axis,
     _pixel_elevations,
     center_patch_rms_from_fits,
+    lst_hour_from_path,
 )
 
 __all__ = [
     "coadd_fits",
     "combine_fits_to_spectral_cube",
+    "screen_fits_by_quality",
     "temporal_std_healpix",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-def _screen_paths_by_quality(
+def _select_best_per_lst_hour(
+    rows: list[tuple[Path, float]],
+    *,
+    quality_metric: str,
+) -> list[tuple[Path, float]]:
+    """Keep the lowest-metric file for each LST hour in *rows*."""
+    by_hour: dict[int, list[tuple[Path, float]]] = {}
+    for path, metric in rows:
+        hour = lst_hour_from_path(path)
+        by_hour.setdefault(hour, []).append((path, metric))
+
+    selected: list[tuple[Path, float]] = []
+    for hour in sorted(by_hour):
+        group = by_hour[hour]
+        best = min(group, key=lambda item: (item[1], str(item[0])))
+        selected.append(best)
+        for path, metric in group:
+            if path == best[0]:
+                continue
+            logger.info(
+                "Quality screen: keeping %s (%s=%.6g) for LST %dh, "
+                "dropping %s (%s=%.6g)",
+                best[0], quality_metric, best[1], hour,
+                path, quality_metric, metric,
+            )
+    return selected
+
+
+def screen_fits_by_quality(
     file_paths: list[str | Path],
     *,
-    quality_max_rms: float | None,
-    quality_outlier_sigma: float | None,
-    quality_metric: Literal["std", "mad_sigma"],
-    quality_center_fraction: float,
-    quality_center_max_pixels: int | None,
-    min_elevation: float | None,
+    quality_max_rms: float | None = None,
+    quality_outlier_sigma: float | None = None,
+    quality_metric: Literal["std", "mad_sigma"] = "std",
+    quality_center_fraction: float = 0.25,
+    quality_center_max_pixels: int | None = 512,
+    min_elevation: float | None = None,
+    one_per_lst_hour: bool = False,
 ) -> list[Path]:
-    """Return paths that pass center-patch quality checks."""
+    """Return FITS paths that pass center-patch quality screening.
+
+    Opens each file with memory mapping, computes dispersion (std or
+    MAD-based scale) on a **central patch** only, and drops files that
+    fail the thresholds.  Units for ``quality_max_rms`` match the image
+    data (see ``BUNIT``).  When ``min_elevation`` is set, the same
+    blanking is applied to the central patch before the metric.
+
+    When ``one_per_lst_hour`` is ``True``, pipeline deep images that
+    share an LST hour (e.g. multiple nights at ``10h``) are reduced to
+    a single file per hour: the one with the lowest center-patch metric.
+    LST hour is parsed from a ``{hour}h`` path component (see
+    :func:`~lwa_healpix.utils.lst_hour_from_path`).
+
+    Parameters
+    ----------
+    file_paths : list of str or Path
+        Paths to FITS files to screen.
+    quality_max_rms : float or None, optional
+        If set, reject images whose center-patch dispersion exceeds this
+        value.
+    quality_outlier_sigma : float or None, optional
+        If set, reject images whose center-patch dispersion exceeds
+        ``median + sigma * 1.4826 * MAD`` over the surviving batch.
+    quality_metric : {\"std\", \"mad_sigma\"}, optional
+        Dispersion statistic on the center patch (default ``\"std\"``).
+    quality_center_fraction : float, optional
+        Linear fraction of each spatial axis used for the center patch
+        (default ``0.25``).
+    quality_center_max_pixels : int or None, optional
+        Maximum patch size in pixels per axis (default ``512``).
+    min_elevation : float or None, optional
+        Minimum elevation above the horizon in degrees.  Pixels below
+        this elevation are blanked before the metric is computed.
+    one_per_lst_hour : bool, optional
+        If ``True``, keep only the best-scoring file per LST hour before
+        applying ``quality_max_rms`` / ``quality_outlier_sigma``.  Intended
+        for deep pipeline products with multiple observations per hour
+        across different dates.
+
+    Returns
+    -------
+    kept : list of Path
+        Subset of *file_paths* that pass all enabled quality checks.
+        Files with no finite pixels in the center patch are always
+        rejected.
+    """
     rows: list[tuple[Path, float]] = []
     for fp in file_paths:
         p = Path(fp)
@@ -56,6 +133,11 @@ def _screen_paths_by_quality(
             )
 
     kept = [(p, r) for p, r in rows if not np.isnan(r)]
+
+    if one_per_lst_hour:
+        if not kept:
+            return []
+        kept = _select_best_per_lst_hour(kept, quality_metric=quality_metric)
 
     if quality_max_rms is not None:
         nxt: list[tuple[Path, float]] = []
@@ -140,10 +222,10 @@ def temporal_std_healpix(
         reprojection, as in :func:`coadd_fits`.
     quality_max_rms : float or None, optional
         If set, reject files by center-patch dispersion before
-        reprojection (see :func:`coadd_fits`).
+        reprojection (see :func:`screen_fits_by_quality`).
     quality_outlier_sigma : float or None, optional
         If set, reject outlier files by center-patch dispersion (see
-        :func:`coadd_fits`).
+        :func:`screen_fits_by_quality`).
     quality_metric : {\"std\", \"mad_sigma\"}, optional
         Metric for quality screening.
     quality_center_fraction : float, optional
@@ -182,7 +264,7 @@ def temporal_std_healpix(
 
     paths = list(file_paths)
     if quality_max_rms is not None or quality_outlier_sigma is not None:
-        paths = _screen_paths_by_quality(
+        paths = screen_fits_by_quality(
             paths,
             quality_max_rms=quality_max_rms,
             quality_outlier_sigma=quality_outlier_sigma,
@@ -256,13 +338,9 @@ def coadd_fits(
       the FITS header.  Returns a 2-D array.
 
     Optional **quality screening** (when ``quality_max_rms`` and/or
-    ``quality_outlier_sigma`` is set) runs *before* reprojection: it
-    opens each file with memory mapping, computes dispersion (std or
-    MAD-based scale) on a **central patch** only, and drops files that
-    fail the thresholds.  This avoids expensive full reprojection of
-    clearly bad images.  Units for ``quality_max_rms`` match the image
-    data (see ``BUNIT``).  When ``min_elevation`` is set, the same
-    blanking is applied to the central patch before the metric.
+    ``quality_outlier_sigma`` is set) runs *before* reprojection via
+    :func:`screen_fits_by_quality`, avoiding expensive full reprojection
+    of clearly bad images.
 
     Parameters
     ----------
@@ -315,7 +393,7 @@ def coadd_fits(
 
     paths = list(file_paths)
     if quality_max_rms is not None or quality_outlier_sigma is not None:
-        paths = _screen_paths_by_quality(
+        paths = screen_fits_by_quality(
             paths,
             quality_max_rms=quality_max_rms,
             quality_outlier_sigma=quality_outlier_sigma,

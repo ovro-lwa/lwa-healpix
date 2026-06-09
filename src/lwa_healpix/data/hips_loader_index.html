@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OVRO-LWA HIPS Viewer</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 1200px;
+        margin: 50px auto;
+        padding: 20px;
+      }
+      .container {
+        background: #f5f5f5;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      select {
+        width: 100%;
+        padding: 10px;
+        font-size: 16px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+      }
+      .error {
+        color: red;
+        margin-top: 10px;
+      }
+      iframe {
+        width: 100%;
+        height: 800px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        margin-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>HIPS File Loader</h1>
+      <p>Select a survey to load:</p>
+
+      <select id="fileSelect">
+        <option value="">-- Loading files... --</option>
+      </select>
+
+      <div id="error" class="error"></div>
+      <iframe id="contentFrame" style="display:none;" allow="webgl"></iframe>
+    </div>
+
+    <script>
+      const fileSelect = document.getElementById('fileSelect');
+      const contentFrame = document.getElementById('contentFrame');
+      const errorDiv = document.getElementById('error');
+
+      /** Find Red/Green/Blue triplets sharing the same suffix. */
+      function findRgbTriples(files) {
+        const set = new Set(files);
+        const triples = [];
+        for (const f of files) {
+          if (!f.startsWith('Red_')) continue;
+          const suffix = f.slice(4);
+          const green = 'Green_' + suffix;
+          const blue = 'Blue_' + suffix;
+          if (set.has(green) && set.has(blue)) {
+            triples.push({
+              label: 'RGB: ' + suffix.replace(/\.hips$/, ''),
+              red: f,
+              green: green,
+              blue: blue,
+            });
+          }
+        }
+        return triples.sort((a, b) => a.label.localeCompare(b.label));
+      }
+
+      function addOption(group, value, label) {
+        const option = document.createElement('option');
+        option.value = JSON.stringify(value);
+        option.textContent = label;
+        group.appendChild(option);
+      }
+
+      async function loadFileList() {
+        try {
+          const response = await fetch('/cgi-bin/list-hips.py');
+          const hipsFiles = await response.json();
+
+          fileSelect.innerHTML = '<option value="">-- Select a survey --</option>';
+
+          const triples = findRgbTriples(hipsFiles);
+          const inTriple = new Set(triples.flatMap(t => [t.red, t.green, t.blue]));
+
+          if (triples.length > 0) {
+            const rgbGroup = document.createElement('optgroup');
+            rgbGroup.label = 'RGB composites';
+            triples.forEach(t => {
+              addOption(rgbGroup, { type: 'rgb', red: t.red, green: t.green, blue: t.blue }, t.label);
+            });
+            fileSelect.appendChild(rgbGroup);
+          }
+
+          const singles = hipsFiles.filter(f => !inTriple.has(f)).sort();
+          if (singles.length > 0) {
+            const singleGroup = document.createElement('optgroup');
+            singleGroup.label = 'Single channel';
+            singles.forEach(file => {
+              addOption(singleGroup, { type: 'single', dir: file }, file);
+            });
+            fileSelect.appendChild(singleGroup);
+          }
+
+          const components = hipsFiles.filter(f =>
+            (f.startsWith('Red_') || f.startsWith('Green_') || f.startsWith('Blue_')) && inTriple.has(f)
+          ).sort();
+          if (components.length > 0) {
+            const compGroup = document.createElement('optgroup');
+            compGroup.label = 'RGB components (single channel)';
+            components.forEach(file => {
+              addOption(compGroup, { type: 'single', dir: file }, file);
+            });
+            fileSelect.appendChild(compGroup);
+          }
+
+          if (hipsFiles.length === 0) {
+            errorDiv.textContent = 'No .hips files found.';
+          }
+        } catch (err) {
+          errorDiv.textContent = 'Error loading file list: ' + err.message;
+          fileSelect.innerHTML = '<option value="">-- Error loading files --</option>';
+        }
+      }
+
+      fileSelect.addEventListener('change', (e) => {
+        const raw = e.target.value;
+        if (!raw) {
+          contentFrame.style.display = 'none';
+          contentFrame.src = '';
+          return;
+        }
+
+        const sel = JSON.parse(raw);
+        if (sel.type === 'rgb') {
+          const q = new URLSearchParams({ red: sel.red, green: sel.green, blue: sel.blue });
+          contentFrame.src = 'rgb-viewer.html?' + q;
+        } else {
+          contentFrame.src = sel.dir + '/index.html';
+        }
+        contentFrame.style.display = 'block';
+        errorDiv.textContent = '';
+      });
+
+      loadFileList();
+    </script>
+  </body>
+</html>

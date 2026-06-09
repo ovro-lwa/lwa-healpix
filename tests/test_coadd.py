@@ -14,6 +14,7 @@ from conftest import _make_lwa_fits
 from lwa_healpix.coadd import (
     coadd_fits,
     combine_fits_to_spectral_cube,
+    screen_fits_by_quality,
     temporal_std_healpix,
 )
 
@@ -288,6 +289,84 @@ def _image_target_header(nx: int = 64, ny: int = 64) -> fits.Header:
     header["CDELT2"] = 0.01
     header["CUNIT2"] = "deg"
     return header
+
+
+def _deep_pipeline_fits(
+    tmp_path,
+    lst: str,
+    date: str,
+    *,
+    freq_hz: float = 41e6,
+    fill_value: float | None = None,
+    noise_scale: float = 1.0,
+) -> Path:
+    """Write a FITS file under a pipeline-style deep-image path."""
+    freq_mhz = int(freq_hz / 1e6)
+    path = (
+        tmp_path / "lustre/pipeline/images" / lst / date
+        / "Run_20260227_014418" / f"{freq_mhz}MHz" / "I" / "deep"
+        / f"{freq_mhz}MHz-I-Deep-{date.replace('-', '')}.fits"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _make_lwa_fits(
+        path,
+        freq_hz,
+        fill_value=fill_value,
+        noise_scale=noise_scale,
+    )
+
+
+class TestScreenFitsByQuality:
+    def test_max_rms_excludes_noisy_file(self, tmp_path):
+        quiet = _make_lwa_fits(tmp_path / "q.fits", 30e6, fill_value=1.0)
+        noisy = _make_lwa_fits(tmp_path / "n.fits", 30e6, noise_scale=1.0)
+        kept = screen_fits_by_quality(
+            [quiet, noisy],
+            quality_max_rms=0.05,
+        )
+        assert kept == [quiet]
+
+    def test_outlier_sigma_rejects_spike(self, tmp_path):
+        files = [
+            _make_lwa_fits(tmp_path / f"f{i}.fits", 30e6 + i, fill_value=0.0)
+            for i in range(4)
+        ]
+        outlier = _make_lwa_fits(tmp_path / "out.fits", 99e6, noise_scale=80.0)
+        kept = screen_fits_by_quality(
+            [*files, outlier],
+            quality_outlier_sigma=2.5,
+        )
+        assert outlier not in kept
+        assert len(kept) == len(files)
+
+    def test_one_per_lst_hour_keeps_best_per_hour(self, tmp_path):
+        quiet_night1 = _deep_pipeline_fits(
+            tmp_path, "10h", "2024-12-18", fill_value=1.0,
+        )
+        noisy_night1 = _deep_pipeline_fits(
+            tmp_path, "10h", "2024-12-19", noise_scale=1.0,
+        )
+        quiet_night2 = _deep_pipeline_fits(
+            tmp_path, "14h", "2024-12-18", fill_value=2.0,
+        )
+        noisy_night2 = _deep_pipeline_fits(
+            tmp_path, "14h", "2024-12-19", noise_scale=1.0,
+        )
+        kept = screen_fits_by_quality(
+            [quiet_night1, noisy_night1, quiet_night2, noisy_night2],
+            one_per_lst_hour=True,
+        )
+        assert kept == [quiet_night1, quiet_night2]
+
+    def test_one_per_lst_hour_then_quality_max_rms(self, tmp_path):
+        good = _deep_pipeline_fits(tmp_path, "10h", "2024-12-18", fill_value=1.0)
+        bad = _deep_pipeline_fits(tmp_path, "14h", "2024-12-18", noise_scale=1.0)
+        kept = screen_fits_by_quality(
+            [good, bad],
+            one_per_lst_hour=True,
+            quality_max_rms=0.05,
+        )
+        assert kept == [good]
 
 
 class TestCoaddFitsQuality:

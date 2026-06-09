@@ -14,9 +14,11 @@ from astropy.io import fits
 __all__ = [
     "center_patch_rms_from_fits",
     "group_pipeline_files",
+    "lst_hour_from_path",
 ]
 
 _FREQ_DIR_RE = re.compile(r"(\d+)\s*MHz", re.IGNORECASE)
+_LST_DIR_RE = re.compile(r"^(\d+)h$", re.IGNORECASE)
 
 
 def _pixel_elevations(wcs_2d: wcs.WCS, shape: tuple[int, int]) -> np.ndarray:
@@ -203,6 +205,38 @@ def center_patch_rms_from_fits(
 
         return _rms_from_finite_values(patch, metric)
 
+
+
+def lst_hour_from_path(path: str | Path) -> int:
+    """Return the integer LST hour from an OVRO-LWA pipeline path.
+
+    Looks for a path component of the form ``{hour}h`` (e.g. ``10h``,
+    ``14h``), as in
+    ``/lustre/pipeline/images/10h/.../41MHz/I/deep/image.fits``.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to a pipeline FITS file.
+
+    Returns
+    -------
+    hour : int
+        Local sidereal time hour, 0–23.
+
+    Raises
+    ------
+    ValueError
+        If no LST hour component can be found in the path.
+    """
+    for part in Path(path).parts:
+        m = _LST_DIR_RE.fullmatch(part)
+        if m is not None:
+            hour = int(m.group(1))
+            if 0 <= hour <= 23:
+                return hour
+    msg = f"Cannot determine LST hour from path: {path}"
+    raise ValueError(msg)
 
 
 def group_pipeline_files(
