@@ -28,6 +28,7 @@ dependencies = [
     "numpy>=1.23",
     "astropy>=5.0",
     "reproject>=0.10",
+    "mocpy>=0.13",
 ]
 
 [project.urls]

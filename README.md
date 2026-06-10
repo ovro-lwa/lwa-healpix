@@ -61,10 +61,38 @@ to coadd).
 ### `fits_to_hips_cube`
 
 End-to-end pipeline from per-frequency FITS images to a HiPS3D tile set.
-Wraps `combine_fits_to_spectral_cube` and `reproject_to_hips` with useful
-defaults for tile size, spectral tile depth, and coordinate frame. Accepts
-the same optional quality-screening keyword arguments as
+Wraps `combine_fits_to_spectral_cube` and `reproject_to_hips` with defaults
+aligned to the [CDS HiPS3D specification](https://aladin.cds.unistra.fr/java/DocTechHiPS3Den.pdf)
+(`tile_size=256`, `tile_depth=16`). After tile generation the function also:
+
+- sets `dataproduct_type = spectral-cube`, `obs_restfreq`, tight `em_min`/
+  `em_max` (metres), and `obs_regime = Radio`
+- leaves `hips_version = 1.4` and `hips_builder = astropy/reproject via
+  lwa-healpix` (honest provenance; not Hipsgen output)
+- writes `obs_description` explaining FMOC indexing vs generator
+- writes `hips_initial_freq` from the centre channel of the input cube
+- writes `Moc.fits` with cube∩tile FMOC frequency coverage (`mocpy`)
+- copies a HiPS3D Aladin Lite v3.8.1 `index.html` viewer (`newImageSurvey`)
+
+To patch an existing HiPS3D directory without regenerating tiles, use
+`upgrade_hips3d(output_directory, freq_min_hz=..., freq_max_hz=...)`.
+By default only missing metadata is filled in; pass `overwrite=True` to
+replace `properties` keys, `Moc.fits`, and `index.html`.
+
+Accepts the same optional quality-screening keyword arguments as
 `combine_fits_to_spectral_cube` and passes them through.
+
+**Viewing in Aladin Lite:** browsers cannot load local tile files directly.
+Serve the output directory over HTTP and open `index.html`:
+
+```bash
+python -m http.server 8000 --directory output/hips_cube
+# then browse to http://localhost:8000/
+```
+
+Use Aladin Lite **v3.8+** for HiPS3D spectrogram navigation. Reference HiPS3D
+examples are listed in the
+[CDS HiPS3D tutorial](https://aladin.cds.unistra.fr/java/TutoHiPS3Den.pdf).
 
 ## Future directions
 

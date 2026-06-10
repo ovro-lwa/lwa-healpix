@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no">
+    <noscript>Please enable Javascript to view this HiPS3D cube.</noscript>
+    <title>HiPS3D spectral cube</title>
+    <style>
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      #aladin-lite { width: 100%; height: 100vh; }
+      #controls {
+        position: absolute;
+        top: 50%;
+        right: 10px;
+        transform: translateY(-50%);
+        z-index: 1000;
+        background: rgba(255,255,255,0.92);
+        padding: 12px;
+        border-radius: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 200px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      }
+      .control-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .control-row label {
+        font-size: 13px;
+        color: #333;
+        flex: 0 0 80px;
+        text-align: right;
+      }
+      .control-row input,
+      .control-row select {
+        flex: 1;
+        padding: 4px 6px;
+        font-size: 13px;
+      }
+      .control-row input[type="number"] { max-width: 90px; }
+      .control-row button {
+        padding: 4px 8px;
+        font-size: 12px;
+        width: 100%;
+      }
+      #status {
+        font-size: 12px;
+        color: #555;
+        line-height: 1.4;
+      }
+    </style>
+</head>
+<body>
+  <div id="controls">
+    <div id="status">Loading HiPS3D…</div>
+    <div class="control-row">
+      <label for="minCutInput">Min cut</label>
+      <input id="minCutInput" type="number" step="any" value="-1" />
+    </div>
+    <div class="control-row">
+      <label for="maxCutInput">Max cut</label>
+      <input id="maxCutInput" type="number" step="any" value="10" />
+    </div>
+    <div class="control-row">
+      <label for="colormapSelect">Colormap</label>
+      <select id="colormapSelect">
+        <option value="cubehelix">Cubehelix</option>
+        <option value="grayscale">Grayscale</option>
+        <option value="viridis">Viridis</option>
+        <option value="native">Native</option>
+      </select>
+    </div>
+    <div class="control-row">
+      <button id="resetBtn" type="button">Reset cuts</button>
+    </div>
+  </div>
+  <div id="aladin-lite"></div>
+
+  <!-- HiPS3D spectrogram requires Aladin Lite v3.8+ (not v2). -->
+  <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.1/aladin.js" charset="utf-8"></script>
+  <script type="text/javascript">
+    const C_LIGHT = 2.99792458e8;
+    const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
+    let aladin = null;
+    let hipsLayer = null;
+
+    async function loadProperties(url) {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error('Could not load properties (' + resp.status + ')');
+      }
+      const text = await resp.text();
+      const props = {};
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq === -1) continue;
+        props[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+      }
+      return props;
+    }
+
+    function frameFromProperties(props) {
+      const frame = (props.hips_frame || 'galactic').toLowerCase();
+      if (frame === 'galactic') return 'galactic';
+      if (frame === 'equatorial') return 'icrs';
+      return frame;
+    }
+
+    function targetFromProperties(props) {
+      if (props.hips_initial_ra && props.hips_initial_dec) {
+        return props.hips_initial_ra + ' ' + props.hips_initial_dec;
+      }
+      return '0 +40';
+    }
+
+    function getSurvey() {
+      return hipsLayer || (aladin && aladin.getBaseImageLayer());
+    }
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function applyCuts(survey) {
+      const layer = survey || getSurvey();
+      if (!layer || typeof layer.setCuts !== 'function') return;
+      const minVal = parseFloat(document.getElementById('minCutInput').value);
+      const maxVal = parseFloat(document.getElementById('maxCutInput').value);
+      if (Number.isFinite(minVal) && Number.isFinite(maxVal)) {
+        layer.setCuts(minVal, maxVal);
+      }
+    }
+
+    function applyColormap(survey) {
+      const layer = survey || getSurvey();
+      if (!layer || typeof layer.setColormap !== 'function') return;
+      layer.setColormap(document.getElementById('colormapSelect').value);
+    }
+
+    function initialWavelengthM(props) {
+      if (props.hips_initial_freq) {
+        return C_LIGHT / parseFloat(props.hips_initial_freq);
+      }
+      if (props.obs_restfreq) {
+        return C_LIGHT / parseFloat(props.obs_restfreq);
+      }
+      if (props.em_min && props.em_max) {
+        return 0.5 * (parseFloat(props.em_min) + parseFloat(props.em_max));
+      }
+      return null;
+    }
+
+    function applyInitialFrequency(survey, props) {
+      const layer = survey || getSurvey();
+      if (!layer || typeof layer.setFrequency !== 'function') return;
+      const wavelengthM = initialWavelengthM(props);
+      if (wavelengthM && Number.isFinite(wavelengthM) && wavelengthM > 0) {
+        layer.setFrequency({ value: wavelengthM, unit: 'm' });
+      }
+    }
+
+    function applyPixelCutsFromProperties(survey, props) {
+      if (!props.hips_pixel_cut) return;
+      const parts = props.hips_pixel_cut.trim().split(/\s+/);
+      if (parts.length !== 2) return;
+      const minCut = parseFloat(parts[0]);
+      const maxCut = parseFloat(parts[1]);
+      if (!Number.isFinite(minCut) || !Number.isFinite(maxCut)) return;
+      defaultConfig.minCut = minCut;
+      defaultConfig.maxCut = maxCut;
+      document.getElementById('minCutInput').value = minCut;
+      document.getElementById('maxCutInput').value = maxCut;
+      applyCuts(survey);
+    }
+
+    function onSurveyReady(survey, props) {
+      hipsLayer = survey;
+      applyPixelCutsFromProperties(survey, props);
+      applyInitialFrequency(survey, props);
+      const title = props.obs_title || 'HiPS3D spectral cube';
+      const product = props.dataproduct_type || 'unknown';
+      setStatus(
+        title + ' (' + product + ') — use the spectrogram below the map to '
+        + 'change frequency. Serve this directory over HTTP (not file://).'
+      );
+    }
+
+    function loadHiPS3D(props) {
+      const surveyOptions = {
+        imgFormat: 'fits',
+        colormap: defaultConfig.colormap,
+        stretch: 'linear',
+        minCut: defaultConfig.minCut,
+        maxCut: defaultConfig.maxCut,
+        successCallback: (survey) => onSurveyReady(survey, props),
+      };
+
+      if (typeof aladin.newImageSurvey === 'function') {
+        const survey = aladin.newImageSurvey('./', surveyOptions);
+        aladin.setImageLayer(survey);
+        return survey;
+      }
+
+      // Fallback for older Aladin Lite builds (no spectrogram).
+      const survey = A.imageHiPS('./', {
+        name: props.obs_title || 'HiPS3D cube',
+        ...surveyOptions,
+      });
+      aladin.setBaseImageLayer(survey);
+      onSurveyReady(survey, props);
+      setStatus(
+        (props.obs_title || 'HiPS3D cube')
+        + ' — WARNING: this Aladin Lite build lacks newImageSurvey; '
+        + 'upgrade to v3.8.1+ for the spectrogram.'
+      );
+      return survey;
+    }
+
+    A.init.then(async () => {
+      let props = {};
+      try {
+        props = await loadProperties('./properties');
+      } catch (err) {
+        console.warn('Could not read properties:', err);
+      }
+
+      if (props.dataproduct_type && props.dataproduct_type !== 'spectral-cube') {
+        setStatus(
+          'Warning: dataproduct_type is "' + props.dataproduct_type
+          + '", expected "spectral-cube" for HiPS3D.'
+        );
+      }
+
+      const fov = parseFloat(props.hips_initial_fov) || 150;
+      aladin = A.aladin('#aladin-lite', {
+        target: targetFromProperties(props),
+        fov,
+        cooFrame: frameFromProperties(props),
+        showSimbadPointerControl: true,
+        showZoomControl: true,
+        showSettingsControl: true,
+        fullScreen: true,
+      });
+
+      loadHiPS3D(props);
+
+      window.aladin = aladin;
+      window.hipsLayer = hipsLayer;
+    }).catch(err => {
+      console.error('Aladin initialization error:', err);
+      setStatus('Failed to initialize Aladin Lite: ' + err.message);
+    });
+
+    document.getElementById('minCutInput').addEventListener('change', () => applyCuts());
+    document.getElementById('maxCutInput').addEventListener('change', () => applyCuts());
+    document.getElementById('colormapSelect').addEventListener('change', () => applyColormap());
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      document.getElementById('minCutInput').value = defaultConfig.minCut;
+      document.getElementById('maxCutInput').value = defaultConfig.maxCut;
+      document.getElementById('colormapSelect').value = defaultConfig.colormap;
+      applyCuts();
+      applyColormap();
+    });
+  </script>
+</body>
+</html>

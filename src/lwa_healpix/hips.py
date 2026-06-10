@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 import shutil
@@ -12,13 +13,34 @@ import numpy as np
 from astropy.io import fits
 from reproject import reproject_from_healpix, reproject_interp
 from reproject.hips import reproject_to_hips
+from reproject.hips.utils import load_properties, save_properties
 
 from .coadd import combine_fits_to_spectral_cube
+from .hips_moc import (
+    C_LIGHT_M_S,
+    coverage_freq_range_hz,
+    freq_range_from_cube_header,
+    wavelength_range_from_freq,
+    write_hips3d_moc,
+)
+
+# Honest provenance strings for HiPS3D ``properties`` (not Hipsgen output).
+_HIPS3D_BUILDER = "astropy/reproject via lwa-healpix"
+logger = logging.getLogger(__name__)
+
+_HIPS3D_DESCRIPTION = (
+    "HiPS3D spectral-cube tiles produced by astropy.reproject (hips_version "
+    "1.4).  Spectral tile indexing uses the CDS FMOC discretization described "
+    "in HiPS3D 1.5-proto2, but this dataset was not built by Hipsgen.  "
+    "Moc.fits is an approximate space-frequency coverage derived from tile "
+    "footprints.  FITS tiles only (no PNG/checkerboard preview layer)."
+)
 
 __all__ = [
     "fits_to_hips",
     "fits_to_hips_cube",
     "healpix_to_hips",
+    "upgrade_hips3d",
 ]
 
 DEFAULT_CAR_HEADER = fits.Header.fromstring(
@@ -90,10 +112,147 @@ def _reproject_healpix_to_car(
     return flat_array, target_header
 
 
-def _copy_index_html(output_directory: Path) -> None:
-    """Copy the bundled ``index.html`` viewer into *output_directory*."""
-    index_src = resources.files("lwa_healpix") / "data" / "index.html"
+def _copy_index_html(
+    output_directory: Path,
+    *,
+    template: str = "index.html",
+) -> None:
+    """Copy a bundled Aladin Lite viewer into *output_directory*."""
+    index_src = resources.files("lwa_healpix") / "data" / template
     shutil.copy2(index_src, output_directory / "index.html")
+
+
+def _finalize_hips3d_properties(
+    output_directory: Path,
+    *,
+    freq_min_hz: float,
+    freq_max_hz: float,
+    initial_freq_hz: float,
+    user_properties: dict[str, str] | None,
+    overwrite: bool = True,
+) -> None:
+    """Add honest HiPS3D metadata without misrepresenting the generator."""
+    props = load_properties(str(output_directory))
+    user = user_properties or {}
+
+    def _set(key: str, value) -> None:
+        if key in user:
+            return
+        if overwrite or key not in props:
+            props[key] = value
+
+    _set("dataproduct_type", "spectral-cube")
+    _set("hips_builder", _HIPS3D_BUILDER)
+    _set("obs_description", _HIPS3D_DESCRIPTION)
+    _set("hips_initial_freq", initial_freq_hz)
+    _set("obs_restfreq", initial_freq_hz)
+    _set("obs_regime", "Radio")
+
+    need_em = (
+        ("em_min" not in user and (overwrite or "em_min" not in props))
+        or ("em_max" not in user and (overwrite or "em_max" not in props))
+    )
+    if need_em:
+        try:
+            eff_fmin, eff_fmax = coverage_freq_range_hz(
+                output_directory, freq_min_hz, freq_max_hz,
+            )
+        except (ValueError, OSError):
+            eff_fmin, eff_fmax = freq_min_hz, freq_max_hz
+        em_min, em_max = wavelength_range_from_freq(eff_fmin, eff_fmax)
+        if "em_min" not in user and (overwrite or "em_min" not in props):
+            props["em_min"] = em_min
+        if "em_max" not in user and (overwrite or "em_max" not in props):
+            props["em_max"] = em_max
+
+    props.update(user)
+    save_properties(str(output_directory), props)
+
+
+def upgrade_hips3d(
+    output_directory: str | Path,
+    *,
+    freq_min_hz: float | None = None,
+    freq_max_hz: float | None = None,
+    initial_freq_hz: float | None = None,
+    properties: dict[str, str] | None = None,
+    overwrite: bool = False,
+) -> None:
+    """Patch an existing HiPS3D directory for Aladin Lite compatibility.
+
+    Updates ``properties`` (``dataproduct_type``, ``em_min``/``em_max``,
+    ``obs_restfreq``, …), regenerates ``Moc.fits``, and copies the HiPS3D
+    ``index.html`` viewer.  Does not regenerate tiles.
+
+    Parameters
+    ----------
+    output_directory : str or Path
+        Root of an existing HiPS3D tile set.
+    freq_min_hz, freq_max_hz : float or None, optional
+        Cube frequency limits in hertz.  If omitted, inferred from
+        ``em_min``/``em_max`` in ``properties`` when present.
+    initial_freq_hz : float or None, optional
+        Centre frequency for ``hips_initial_freq`` / ``obs_restfreq``.
+        Defaults to the midpoint of the frequency range.
+    properties : dict or None, optional
+        Extra ``properties`` entries (same as :func:`fits_to_hips_cube`).
+        These keys are always written, even when *overwrite* is ``False``.
+    overwrite : bool, optional
+        If ``True``, replace existing ``properties`` keys, ``Moc.fits``, and
+        ``index.html``.  If ``False`` (default), only fill missing metadata
+        and skip ``Moc.fits`` / ``index.html`` when they already exist.
+    """
+    output_directory = Path(output_directory)
+    if not (output_directory / "properties").exists():
+        msg = f"No HiPS properties file in {output_directory}"
+        raise ValueError(msg)
+
+    props = load_properties(str(output_directory))
+    if props.get("dataproduct_type") != "spectral-cube":
+        logger.warning(
+            "Expected dataproduct_type=spectral-cube, got %r",
+            props.get("dataproduct_type"),
+        )
+
+    if freq_min_hz is None or freq_max_hz is None:
+        if "em_min" in props and "em_max" in props:
+            em_min = float(props["em_min"])
+            em_max = float(props["em_max"])
+            inferred_max = C_LIGHT_M_S / em_min
+            inferred_min = C_LIGHT_M_S / em_max
+            freq_min_hz = inferred_min if freq_min_hz is None else freq_min_hz
+            freq_max_hz = inferred_max if freq_max_hz is None else freq_max_hz
+        else:
+            msg = (
+                "freq_min_hz and freq_max_hz are required when em_min/em_max "
+                "are not in properties"
+            )
+            raise ValueError(msg)
+
+    if initial_freq_hz is None:
+        if "hips_initial_freq" in props:
+            initial_freq_hz = float(props["hips_initial_freq"])
+        else:
+            initial_freq_hz = 0.5 * (freq_min_hz + freq_max_hz)
+
+    _finalize_hips3d_properties(
+        output_directory,
+        freq_min_hz=freq_min_hz,
+        freq_max_hz=freq_max_hz,
+        initial_freq_hz=initial_freq_hz,
+        user_properties=properties,
+        overwrite=overwrite,
+    )
+    moc_path = output_directory / "Moc.fits"
+    if overwrite or not moc_path.exists():
+        write_hips3d_moc(
+            output_directory,
+            freq_min_hz=freq_min_hz,
+            freq_max_hz=freq_max_hz,
+        )
+    index_path = output_directory / "index.html"
+    if overwrite or not index_path.exists():
+        _copy_index_html(output_directory, template="index_cube.html")
 
 
 def healpix_to_hips(
@@ -205,8 +364,8 @@ def fits_to_hips_cube(
     quality_metric: Literal["std", "mad_sigma"] = "std",
     quality_center_fraction: float = 0.25,
     quality_center_max_pixels: int | None = 512,
-    tile_size: int = 512,
-    tile_depth: int = 2,
+    tile_size: int = 256,
+    tile_depth: int = 16,
     level: int | None = None,
     level_depth: int | None = None,
     threads: bool = True,
@@ -218,7 +377,15 @@ def fits_to_hips_cube(
     :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube` to
     assemble a 3-D spectral cube and then passes it to
     :func:`reproject.hips.reproject_to_hips` to generate a HiPS3D tile
-    set.
+    set intended for Aladin Lite v3.8+ HiPS3D clients.
+
+    Tiles are generated by ``astropy.reproject`` (``hips_version`` 1.4,
+    ``hips_builder`` records ``astropy/reproject via lwa-healpix``).
+    This is not Hipsgen ``1.5-proto2`` output; ``obs_description`` in
+    the ``properties`` file states the actual provenance.  Tile defaults
+    follow CDS HiPS3D recommendations (``tile_size=256``,
+    ``tile_depth=16``).  An approximate ``Moc.fits``, ``hips_initial_freq``,
+    and a HiPS3D-aware ``index.html`` viewer are also written.
 
     Each input file is expected to contain a 4-D FITS image with axes
     ``(RA, Dec, Freq, Stokes)`` where frequency and Stokes are both
@@ -258,11 +425,10 @@ def fits_to_hips_cube(
     quality_center_max_pixels : int or None, optional
         Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
     tile_size : int, optional
-        Spatial tile size in pixels.  Default is 512.
+        Spatial tile size in pixels (default ``256``, per CDS HiPS3D).
     tile_depth : int, optional
-        Depth of each tile along the spectral axis.  Must be at least
-        2 (reproject requires this for lower-resolution tile
-        generation).  Default is 2.
+        Depth of each tile along the spectral axis.  Must be a power of
+        two and at least ``2``.  Default is ``16``.
     level : int or None, optional
         Maximum spatial HiPS order.  If *None*, ``reproject`` chooses
         automatically based on the input resolution.
@@ -293,6 +459,12 @@ def fits_to_hips_cube(
         )
 
         cube_hdu = hdul[0]
+        freq_min_hz, freq_max_hz, initial_freq_hz = freq_range_from_cube_header(
+            cube_hdu.header,
+        )
+
+        hips_properties = dict(properties) if properties else {}
+        hips_properties.setdefault("hips_initial_freq", str(initial_freq_hz))
 
         # reproject's lower-resolution tile generation uses
         # block_reduce(..., 2) along the spectral axis.  With
@@ -311,7 +483,20 @@ def fits_to_hips_cube(
             level=level,
             level_depth=level_depth,
             threads=threads,
-            properties=properties,
+            properties=hips_properties,
         )
 
-    _copy_index_html(output_directory)
+        _finalize_hips3d_properties(
+            output_directory,
+            freq_min_hz=freq_min_hz,
+            freq_max_hz=freq_max_hz,
+            initial_freq_hz=initial_freq_hz,
+            user_properties=properties,
+        )
+        write_hips3d_moc(
+            output_directory,
+            freq_min_hz=freq_min_hz,
+            freq_max_hz=freq_max_hz,
+        )
+
+    _copy_index_html(output_directory, template="index_cube.html")
