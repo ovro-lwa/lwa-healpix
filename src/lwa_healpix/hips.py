@@ -122,6 +122,32 @@ def _copy_index_html(
     shutil.copy2(index_src, output_directory / "index.html")
 
 
+_MAX_SANE_PIXEL_CUT_ABS = 1e10
+
+
+def _sanitize_hips_pixel_cut(props: dict[str, str | float]) -> None:
+    """Drop ``hips_pixel_cut`` when reproject wrote nonsensical FITS limits."""
+    raw = props.get("hips_pixel_cut")
+    if raw is None:
+        return
+    try:
+        parts = str(raw).split()
+        if len(parts) != 2:
+            raise ValueError("expected two numbers")
+        lo, hi = float(parts[0]), float(parts[1])
+    except (TypeError, ValueError):
+        logger.warning("Removing invalid hips_pixel_cut: %r", raw)
+        props.pop("hips_pixel_cut", None)
+        return
+    if (
+        lo >= hi
+        or abs(lo) > _MAX_SANE_PIXEL_CUT_ABS
+        or abs(hi) > _MAX_SANE_PIXEL_CUT_ABS
+    ):
+        logger.warning("Removing nonsensical hips_pixel_cut: %s %s", lo, hi)
+        props.pop("hips_pixel_cut", None)
+
+
 def _finalize_hips3d_properties(
     output_directory: Path,
     *,
@@ -164,6 +190,9 @@ def _finalize_hips3d_properties(
             props["em_min"] = em_min
         if "em_max" not in user and (overwrite or "em_max" not in props):
             props["em_max"] = em_max
+
+    if "hips_pixel_cut" not in user:
+        _sanitize_hips_pixel_cut(props)
 
     props.update(user)
     save_properties(str(output_directory), props)
@@ -249,6 +278,7 @@ def upgrade_hips3d(
             output_directory,
             freq_min_hz=freq_min_hz,
             freq_max_hz=freq_max_hz,
+            overwrite=overwrite,
         )
     index_path = output_directory / "index.html"
     if overwrite or not index_path.exists():

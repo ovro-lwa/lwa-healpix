@@ -82,7 +82,7 @@
   <!-- HiPS3D spectrogram requires Aladin Lite v3.8+ (not v2). -->
   <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.1/aladin.js" charset="utf-8"></script>
   <script type="text/javascript">
-    const C_LIGHT = 2.99792458e8;
+    const MAX_SANE_PIXEL_CUT_ABS = 1e10;
     const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
     let aladin = null;
     let hipsLayer = null;
@@ -126,12 +126,29 @@
       document.getElementById('status').textContent = msg;
     }
 
+    function isSanePixelCut(minCut, maxCut) {
+      return Number.isFinite(minCut)
+        && Number.isFinite(maxCut)
+        && minCut < maxCut
+        && Math.abs(minCut) <= MAX_SANE_PIXEL_CUT_ABS
+        && Math.abs(maxCut) <= MAX_SANE_PIXEL_CUT_ABS;
+    }
+
+    function parsePixelCuts(props) {
+      if (!props.hips_pixel_cut) return null;
+      const parts = props.hips_pixel_cut.trim().split(/\s+/);
+      if (parts.length !== 2) return null;
+      const minCut = parseFloat(parts[0]);
+      const maxCut = parseFloat(parts[1]);
+      return isSanePixelCut(minCut, maxCut) ? { minCut, maxCut } : null;
+    }
+
     function applyCuts(survey) {
       const layer = survey || getSurvey();
       if (!layer || typeof layer.setCuts !== 'function') return;
       const minVal = parseFloat(document.getElementById('minCutInput').value);
       const maxVal = parseFloat(document.getElementById('maxCutInput').value);
-      if (Number.isFinite(minVal) && Number.isFinite(maxVal)) {
+      if (isSanePixelCut(minVal, maxVal)) {
         layer.setCuts(minVal, maxVal);
       }
     }
@@ -142,46 +159,31 @@
       layer.setColormap(document.getElementById('colormapSelect').value);
     }
 
-    function initialWavelengthM(props) {
-      if (props.hips_initial_freq) {
-        return C_LIGHT / parseFloat(props.hips_initial_freq);
-      }
-      if (props.obs_restfreq) {
-        return C_LIGHT / parseFloat(props.obs_restfreq);
-      }
-      if (props.em_min && props.em_max) {
-        return 0.5 * (parseFloat(props.em_min) + parseFloat(props.em_max));
-      }
-      return null;
-    }
-
-    function applyInitialFrequency(survey, props) {
-      const layer = survey || getSurvey();
-      if (!layer || typeof layer.setFrequency !== 'function') return;
-      const wavelengthM = initialWavelengthM(props);
-      if (wavelengthM && Number.isFinite(wavelengthM) && wavelengthM > 0) {
-        layer.setFrequency({ value: wavelengthM, unit: 'm' });
+    function syncCutControlsFromLayer(layer) {
+      const fmt = layer.imgFormat || 'fits';
+      const minCut = layer.minCut && layer.minCut[fmt];
+      const maxCut = layer.maxCut && layer.maxCut[fmt];
+      if (isSanePixelCut(minCut, maxCut)) {
+        defaultConfig.minCut = minCut;
+        defaultConfig.maxCut = maxCut;
+        document.getElementById('minCutInput').value = minCut;
+        document.getElementById('maxCutInput').value = maxCut;
       }
     }
 
-    function applyPixelCutsFromProperties(survey, props) {
-      if (!props.hips_pixel_cut) return;
-      const parts = props.hips_pixel_cut.trim().split(/\s+/);
-      if (parts.length !== 2) return;
-      const minCut = parseFloat(parts[0]);
-      const maxCut = parseFloat(parts[1]);
-      if (!Number.isFinite(minCut) || !Number.isFinite(maxCut)) return;
-      defaultConfig.minCut = minCut;
-      defaultConfig.maxCut = maxCut;
-      document.getElementById('minCutInput').value = minCut;
-      document.getElementById('maxCutInput').value = maxCut;
-      applyCuts(survey);
-    }
-
-    function onSurveyReady(survey, props) {
-      hipsLayer = survey;
-      applyPixelCutsFromProperties(survey, props);
-      applyInitialFrequency(survey, props);
+    function attachCutControls(layer, props) {
+      hipsLayer = layer;
+      const cuts = parsePixelCuts(props);
+      if (cuts) {
+        defaultConfig.minCut = cuts.minCut;
+        defaultConfig.maxCut = cuts.maxCut;
+        document.getElementById('minCutInput').value = cuts.minCut;
+        document.getElementById('maxCutInput').value = cuts.maxCut;
+        applyCuts(layer);
+      } else {
+        syncCutControlsFromLayer(layer);
+      }
+      applyColormap(layer);
       const title = props.obs_title || 'HiPS3D spectral cube';
       const product = props.dataproduct_type || 'unknown';
       setStatus(
@@ -190,35 +192,23 @@
       );
     }
 
-    function loadHiPS3D(props) {
-      const surveyOptions = {
-        imgFormat: 'fits',
-        colormap: defaultConfig.colormap,
-        stretch: 'linear',
-        minCut: defaultConfig.minCut,
-        maxCut: defaultConfig.maxCut,
-        successCallback: (survey) => onSurveyReady(survey, props),
-      };
-
-      if (typeof aladin.newImageSurvey === 'function') {
-        const survey = aladin.newImageSurvey('./', surveyOptions);
-        aladin.setImageLayer(survey);
-        return survey;
+    function whenBaseLayerReady(callback, attempts = 200) {
+      const layer = aladin && aladin.getBaseImageLayer();
+      if (layer && layer.added) {
+        callback(layer);
+        return;
       }
+      if (attempts <= 0) {
+        setStatus('HiPS3D layer did not finish loading.');
+        return;
+      }
+      requestAnimationFrame(() => whenBaseLayerReady(callback, attempts - 1));
+    }
 
-      // Fallback for older Aladin Lite builds (no spectrogram).
-      const survey = A.imageHiPS('./', {
-        name: props.obs_title || 'HiPS3D cube',
-        ...surveyOptions,
-      });
-      aladin.setBaseImageLayer(survey);
-      onSurveyReady(survey, props);
-      setStatus(
-        (props.obs_title || 'HiPS3D cube')
-        + ' — WARNING: this Aladin Lite build lacks newImageSurvey; '
-        + 'upgrade to v3.8.1+ for the spectrogram.'
-      );
-      return survey;
+    function loadHiPS3D(props) {
+      // CDS-style load: let Aladin fetch properties and attach the spectrogram.
+      aladin.setBaseImageLayer('./');
+      whenBaseLayerReady((layer) => attachCutControls(layer, props));
     }
 
     A.init.then(async () => {
@@ -250,7 +240,6 @@
       loadHiPS3D(props);
 
       window.aladin = aladin;
-      window.hipsLayer = hipsLayer;
     }).catch(err => {
       console.error('Aladin initialization error:', err);
       setStatus('Failed to initialize Aladin Lite: ' + err.message);

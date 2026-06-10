@@ -174,6 +174,7 @@ def write_hips3d_moc(
     *,
     freq_min_hz: float,
     freq_max_hz: float,
+    overwrite: bool = True,
 ) -> Path:
     """Write ``Moc.fits`` (SFMOC) describing HiPS3D spatial and frequency coverage.
 
@@ -187,6 +188,9 @@ def write_hips3d_moc(
         Root directory of the HiPS3D tile set.
     freq_min_hz, freq_max_hz : float
         Frequency coverage in hertz from the input spectral cube.
+    overwrite : bool, optional
+        Replace an existing ``Moc.fits`` (passed through to ``mocpy``).
+        Default is ``True``.
 
     Returns
     -------
@@ -220,7 +224,7 @@ def write_hips3d_moc(
     )
 
     moc_path = output_directory / "Moc.fits"
-    sfmoc.save(moc_path, format="fits")
+    sfmoc.save(moc_path, format="fits", overwrite=overwrite)
     logger.info(
         "Wrote HiPS3D Moc.fits (%d spatial cells at order %d, "
         "freq order %d, %.6g–%.6g Hz from cube∩tiles)",
