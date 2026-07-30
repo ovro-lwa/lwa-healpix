@@ -125,6 +125,61 @@ def _copy_index_html(
 _MAX_SANE_PIXEL_CUT_ABS = 1e10
 
 
+def _percentile_pixel_cut(
+    data,
+    percentiles: tuple[float, float],
+) -> str:
+    """Return finite-data percentile cuts formatted for HiPS properties."""
+    low_percentile, high_percentile = percentiles
+    if not 0 <= low_percentile < high_percentile <= 100:
+        msg = "cut_percentiles must satisfy 0 <= low < high <= 100"
+        raise ValueError(msg)
+
+    array = np.ma.asarray(data)
+    values = array.compressed() if np.ma.isMaskedArray(array) else array.ravel()
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        msg = "Cannot calculate percentile cuts without finite pixels"
+        raise ValueError(msg)
+
+    low_cut, high_cut = np.percentile(
+        finite_values,
+        [low_percentile, high_percentile],
+    )
+    if low_cut == high_cut:
+        low_cut = np.nextafter(low_cut, -np.inf)
+        high_cut = np.nextafter(high_cut, np.inf)
+
+    return f"{low_cut:.17g} {high_cut:.17g}"
+
+
+def _input_data_array(input_data):
+    """Extract an array from the input forms accepted by reproject."""
+    if isinstance(input_data, (str, Path)):
+        return fits.getdata(input_data, memmap=True)
+    if isinstance(input_data, tuple):
+        return input_data[0]
+    if isinstance(input_data, fits.HDUList):
+        return input_data[0].data
+    data = getattr(input_data, "data", None)
+    if data is None:
+        msg = f"Cannot extract pixel data from {type(input_data).__name__}"
+        raise TypeError(msg)
+    return data
+
+
+def _properties_with_percentile_cuts(
+    properties: dict[str, str] | None,
+    data,
+    cut_percentiles: tuple[float, float] | None,
+) -> dict[str, str]:
+    """Return properties containing percentile-derived default cuts."""
+    output = dict(properties) if properties else {}
+    if cut_percentiles is not None and "hips_pixel_cut" not in output:
+        output["hips_pixel_cut"] = _percentile_pixel_cut(data, cut_percentiles)
+    return output
+
+
 def _sanitize_hips_pixel_cut(props: dict[str, str | float]) -> None:
     """Drop ``hips_pixel_cut`` when reproject wrote nonsensical FITS limits."""
     raw = props.get("hips_pixel_cut")
@@ -292,6 +347,8 @@ def healpix_to_hips(
     nested: bool = False,
     target_header: fits.Header | None = None,
     threads: bool = True,
+    cut_percentiles: tuple[float, float] | None = (1.0, 99.0),
+    properties: dict[str, str] | None = None,
 ) -> None:
     """Reproject a HEALPix map to a CAR grid and generate HiPS tiles.
 
@@ -311,6 +368,13 @@ def healpix_to_hips(
         the HEALPix NSIDE (derived from the length of *healpix_map*).
     threads : bool, optional
         Whether to use multi-threaded reprojection. Default is ``True``.
+    cut_percentiles : tuple of float or None, optional
+        Lower and upper percentiles used for the default viewer cuts. Only
+        finite, unmasked input pixels are included. Set to ``None`` to retain
+        reproject's full data range. Default is ``(1, 99)``.
+    properties : dict or None, optional
+        Extra HiPS properties. An explicit ``hips_pixel_cut`` overrides
+        *cut_percentiles*.
     """
     flat_array, header = _reproject_healpix_to_car(
         healpix_map, coord_frame=coord_frame,
@@ -318,6 +382,11 @@ def healpix_to_hips(
     )
 
     output_directory = Path(output_directory)
+    hips_properties = _properties_with_percentile_cuts(
+        properties,
+        healpix_map,
+        cut_percentiles,
+    )
 
     reproject_to_hips(
         (flat_array, header),
@@ -325,6 +394,7 @@ def healpix_to_hips(
         coord_system_out=coord_frame,
         reproject_function=reproject_interp,
         threads=threads,
+        properties=hips_properties,
     )
 
     _copy_index_html(output_directory)
@@ -338,6 +408,7 @@ def fits_to_hips(
     tile_size: int = 512,
     level: int | None = None,
     threads: bool = True,
+    cut_percentiles: tuple[float, float] | None = (1.0, 99.0),
     properties: dict[str, str] | None = None,
 ) -> None:
     """Generate 2-D HiPS tiles from a FITS image.
@@ -362,11 +433,21 @@ def fits_to_hips(
         automatically based on the input resolution.
     threads : bool, optional
         Enable multi-threaded tile generation.  Default is ``True``.
+    cut_percentiles : tuple of float or None, optional
+        Lower and upper percentiles used for the default viewer cuts. Only
+        finite, unmasked input pixels are included. Set to ``None`` to retain
+        reproject's full data range. Default is ``(1, 99)``.
     properties : dict or None, optional
         Extra key/value pairs to write into the HiPS ``properties``
-        file (e.g. ``obs_title``, ``creator_did``).
+        file (e.g. ``obs_title``, ``creator_did``). An explicit
+        ``hips_pixel_cut`` overrides *cut_percentiles*.
     """
     output_directory = Path(output_directory)
+    hips_properties = _properties_with_percentile_cuts(
+        properties,
+        _input_data_array(input_data),
+        cut_percentiles,
+    )
 
     reproject_to_hips(
         input_data,
@@ -376,7 +457,7 @@ def fits_to_hips(
         tile_size=tile_size,
         level=level,
         threads=threads,
-        properties=properties,
+        properties=hips_properties,
     )
 
     _copy_index_html(output_directory)
@@ -399,6 +480,7 @@ def fits_to_hips_cube(
     level: int | None = None,
     level_depth: int | None = None,
     threads: bool = True,
+    cut_percentiles: tuple[float, float] | None = (1.0, 99.0),
     properties: dict[str, str] | None = None,
 ) -> None:
     """Build a HiPS cube from single-frequency FITS images.
@@ -467,9 +549,14 @@ def fits_to_hips_cube(
         automatically.
     threads : bool, optional
         Enable multi-threaded tile generation.  Default is ``True``.
+    cut_percentiles : tuple of float or None, optional
+        Lower and upper percentiles used for the default viewer cuts across
+        all finite, unmasked cube pixels. Set to ``None`` to retain
+        reproject's full data range. Default is ``(1, 99)``.
     properties : dict or None, optional
         Extra key/value pairs to write into the HiPS ``properties``
-        file (e.g. ``obs_title``, ``creator_did``).
+        file (e.g. ``obs_title``, ``creator_did``). An explicit
+        ``hips_pixel_cut`` overrides *cut_percentiles*.
     """
     import tempfile
 
@@ -495,6 +582,11 @@ def fits_to_hips_cube(
 
         hips_properties = dict(properties) if properties else {}
         hips_properties.setdefault("hips_initial_freq", str(initial_freq_hz))
+        hips_properties = _properties_with_percentile_cuts(
+            hips_properties,
+            cube_hdu.data,
+            cut_percentiles,
+        )
 
         # reproject's lower-resolution tile generation uses
         # block_reduce(..., 2) along the spectral axis.  With

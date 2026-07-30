@@ -9,6 +9,8 @@ from conftest import _make_lwa_fits
 
 from lwa_healpix.hips import (
     _car_header_for_nside,
+    _percentile_pixel_cut,
+    _properties_with_percentile_cuts,
     fits_to_hips,
     fits_to_hips_cube,
     healpix_to_hips,
@@ -47,6 +49,32 @@ class TestCarHeaderForNside:
         assert ny * cdelt >= 179.9
 
 
+class TestPercentilePixelCuts:
+    def test_excludes_nonfinite_and_masked_values(self):
+        data = np.ma.array(
+            [0.0, 1.0, 2.0, 3.0, np.nan, np.inf, 1000.0],
+            mask=[False, False, False, False, False, False, True],
+        )
+
+        low, high = map(float, _percentile_pixel_cut(data, (25, 75)).split())
+
+        assert low == 0.75
+        assert high == 2.25
+
+    def test_rejects_invalid_percentiles(self):
+        with np.testing.assert_raises(ValueError):
+            _percentile_pixel_cut(np.arange(10), (99, 1))
+
+    def test_explicit_property_overrides_percentiles(self):
+        properties = _properties_with_percentile_cuts(
+            {"hips_pixel_cut": "-5 20"},
+            np.arange(100),
+            (1, 99),
+        )
+
+        assert properties["hips_pixel_cut"] == "-5 20"
+
+
 # ---------------------------------------------------------------------------
 # healpix_to_hips
 # ---------------------------------------------------------------------------
@@ -64,6 +92,8 @@ class TestHealpixToHips:
         assert out_dir.is_dir()
         assert (out_dir / "properties").exists()
         assert (out_dir / "index.html").exists()
+        props = (out_dir / "properties").read_text()
+        assert "hips_pixel_cut" in props
 
     def test_norder_directories_exist(self, tmp_path):
         nside = 8
@@ -111,6 +141,11 @@ class TestFitsToHips:
         assert out_dir.is_dir()
         assert (out_dir / "properties").exists()
         assert (out_dir / "index.html").exists()
+        props = (out_dir / "properties").read_text()
+        assert "hips_pixel_cut" in props
+        index_html = (out_dir / "index.html").read_text()
+        assert "loadDefaultCuts" in index_html
+        assert 'value="magma"' in index_html
 
     def test_output_from_fits_file(self, tmp_path):
         fpath = _make_lwa_fits(
@@ -171,6 +206,7 @@ class TestFitsToHipsCube:
         assert "not built by Hipsgen" in props_text
         assert "obs_restfreq" in props_text
         assert "obs_regime           = Radio" in props_text
+        assert "hips_pixel_cut       = 1 3" in props_text
         assert "em_min" in props_text
         assert "em_max" in props_text
         em_min = float(props_text.split("em_min")[1].split("\n")[0].split("=")[1])

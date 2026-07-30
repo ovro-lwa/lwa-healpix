@@ -43,6 +43,18 @@ Plate Carree (CAR) grid. The CAR grid pixel scale is automatically matched
 to the HEALPix NSIDE so that resolution is preserved. An `index.html`
 viewer (Aladin Lite) is copied into the output directory.
 
+### Percentile-based viewer cuts
+
+`healpix_to_hips`, `fits_to_hips`, and `fits_to_hips_cube` calculate the
+default display cuts from the 1st and 99th percentiles of finite, unmasked
+input pixels. The resulting absolute values are written to
+`hips_pixel_cut` in the HiPS `properties` file. The bundled viewer loads
+these defaults into its min/max controls; users can still edit either value.
+
+Choose different percentiles with `cut_percentiles=(low, high)`, disable
+percentile calculation with `cut_percentiles=None`, or provide an explicit
+`properties={"hips_pixel_cut": "min max"}` override.
+
 ### `combine_fits_to_spectral_cube`
 
 Combine single-frequency FITS images into a 3-D spectral cube. Each input

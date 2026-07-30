@@ -66,6 +66,7 @@
       <select id="colormapSelect">
         <option value="cubehelix">Cubehelix</option>
         <option value="grayscale">Grayscale</option>
+        <option value="magma">Magma</option>
         <option value="viridis">Viridis</option>
         <option value="native">Native</option>
       </select>
@@ -87,7 +88,37 @@
     return aladin && aladin.getBaseImageLayer();
   }
 
-  A.init.then(() => {
+  async function loadDefaultCuts() {
+    try {
+      const response = await fetch('./properties');
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status);
+      }
+      const properties = await response.text();
+      const match = properties.match(
+        /^hips_pixel_cut\s*=\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s*$/m
+      );
+      if (!match) return;
+
+      const minCut = parseFloat(match[1]);
+      const maxCut = parseFloat(match[2]);
+      if (!Number.isFinite(minCut) || !Number.isFinite(maxCut) || minCut >= maxCut) {
+        console.warn('Ignoring invalid hips_pixel_cut:', match[0]);
+        return;
+      }
+
+      defaultConfig.minCut = minCut;
+      defaultConfig.maxCut = maxCut;
+      document.getElementById('minCutInput').value = minCut;
+      document.getElementById('maxCutInput').value = maxCut;
+    } catch (err) {
+      console.warn('Could not load percentile cuts from properties:', err);
+    }
+  }
+
+  A.init.then(async () => {
+    await loadDefaultCuts();
+
     aladin = A.aladin('#aladin-lite', {
       target: '0 +40',
       fov: 150,
