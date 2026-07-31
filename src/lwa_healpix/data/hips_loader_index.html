@@ -35,6 +35,43 @@
         border-radius: 4px;
         margin-top: 20px;
       }
+      #deepLink {
+        display: none;
+        width: 100%;
+        margin-top: 14px;
+        padding: 10px;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        background: #fff;
+        color: #175a94;
+        font: 13px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-align: left;
+        overflow-wrap: anywhere;
+        cursor: pointer;
+      }
+      #deepLink:hover {
+        background: #eef6ff;
+      }
+      #copyStatus {
+        display: block;
+        min-height: 1.2em;
+        margin-top: 5px;
+        color: #267326;
+        font-size: 12px;
+      }
+      .url-help {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #ccc;
+        color: #444;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .url-help code {
+        background: #e8e8e8;
+        padding: 2px 4px;
+        border-radius: 3px;
+      }
     </style>
   </head>
   <body>
@@ -48,12 +85,26 @@
 
       <div id="error" class="error"></div>
       <iframe id="contentFrame" style="display:none;" allow="webgl"></iframe>
+      <button id="deepLink" type="button" title="Click to copy this deep link"></button>
+      <span id="copyStatus" aria-live="polite"></span>
+      <div class="url-help">
+        <strong>Deep-link URL scheme</strong><br>
+        Single survey: <code>?survey=survey-name.hips</code><br>
+        RGB composite:
+        <code>?red=Red_name.hips&amp;green=Green_name.hips&amp;blue=Blue_name.hips</code><br>
+        Optional initial view:
+        <code>&amp;ra=180&amp;dec=34&amp;fov=20</code> (degrees). All additional
+        query fields are retained in the deep link and forwarded to the
+        embedded viewer.
+      </div>
     </div>
 
     <script>
       const fileSelect = document.getElementById('fileSelect');
       const contentFrame = document.getElementById('contentFrame');
       const errorDiv = document.getElementById('error');
+      const deepLinkButton = document.getElementById('deepLink');
+      const copyStatus = document.getElementById('copyStatus');
 
       /** Find Red/Green/Blue triplets sharing the same suffix. */
       function findRgbTriples(files) {
@@ -81,6 +132,168 @@
         option.value = JSON.stringify(value);
         option.textContent = label;
         group.appendChild(option);
+      }
+
+      function selectionsEqual(left, right) {
+        if (!left || !right || left.type !== right.type) return false;
+        if (left.type === 'single') return left.dir === right.dir;
+        return left.red === right.red
+          && left.green === right.green
+          && left.blue === right.blue;
+      }
+
+      function findSelectionOption(selection) {
+        return Array.from(fileSelect.options).find(option => {
+          if (!option.value) return false;
+          try {
+            return selectionsEqual(JSON.parse(option.value), selection);
+          } catch (_) {
+            return false;
+          }
+        });
+      }
+
+      function selectionFromUrl() {
+        const params = new URLSearchParams(location.search);
+        const survey = params.get('survey');
+        if (survey) {
+          return { type: 'single', dir: survey };
+        }
+
+        const red = params.get('red');
+        const green = params.get('green');
+        const blue = params.get('blue');
+        if (red && green && blue) {
+          return { type: 'rgb', red, green, blue };
+        }
+        return null;
+      }
+
+      function forwardedParamsFromUrl() {
+        const source = new URLSearchParams(location.search);
+        const output = new URLSearchParams();
+        for (const [key, value] of source) {
+          if (!['survey', 'red', 'green', 'blue'].includes(key)) {
+            output.append(key, value);
+          }
+        }
+        return output;
+      }
+
+      function frameUrl(selection) {
+        const forwardedParams = forwardedParamsFromUrl();
+        if (selection.type === 'rgb') {
+          const params = new URLSearchParams({
+            red: selection.red,
+            green: selection.green,
+            blue: selection.blue,
+          });
+          for (const [key, value] of forwardedParams) params.append(key, value);
+          return 'rgb-viewer.html?' + params;
+        }
+
+        const query = forwardedParams.toString();
+        const suffix = query ? '?' + query : '';
+        return selection.dir + '/index.html' + suffix;
+      }
+
+      function applyInitialViewToFrame(attempts = 200) {
+        const params = new URLSearchParams(location.search);
+        const ra = parseFloat(params.get('ra'));
+        const dec = parseFloat(params.get('dec'));
+        const fov = parseFloat(params.get('fov'));
+        const hasPosition = Number.isFinite(ra) && Number.isFinite(dec);
+        const hasFov = Number.isFinite(fov) && fov > 0;
+        if (!hasPosition && !hasFov) return;
+
+        let childAladin = null;
+        try {
+          childAladin = contentFrame.contentWindow.aladin;
+        } catch (err) {
+          console.warn('Could not access the embedded viewer:', err);
+          return;
+        }
+
+        if (!childAladin) {
+          if (attempts > 0) {
+            setTimeout(() => applyInitialViewToFrame(attempts - 1), 50);
+          } else {
+            console.warn('Embedded Aladin viewer did not initialize in time.');
+          }
+          return;
+        }
+
+        if (hasPosition && typeof childAladin.gotoRaDec === 'function') {
+          childAladin.gotoRaDec(ra, dec);
+        }
+        if (hasFov && typeof childAladin.setFov === 'function') {
+          childAladin.setFov(fov);
+        }
+      }
+
+      function deepLinkUrl(selection) {
+        const url = new URL(location.href);
+        for (const key of ['survey', 'red', 'green', 'blue']) {
+          url.searchParams.delete(key);
+        }
+
+        if (selection) {
+          if (selection.type === 'rgb') {
+            url.searchParams.set('red', selection.red);
+            url.searchParams.set('green', selection.green);
+            url.searchParams.set('blue', selection.blue);
+          } else {
+            url.searchParams.set('survey', selection.dir);
+          }
+        }
+        return url;
+      }
+
+      function updateDeepLink(selection, replace = false) {
+        const url = deepLinkUrl(selection);
+        history[replace ? 'replaceState' : 'pushState']({}, '', url);
+      }
+
+      function showDeepLink(selection) {
+        if (!selection) {
+          deepLinkButton.style.display = 'none';
+          deepLinkButton.textContent = '';
+          copyStatus.textContent = '';
+          return;
+        }
+        deepLinkButton.textContent = deepLinkUrl(selection).href;
+        deepLinkButton.style.display = 'block';
+        copyStatus.textContent = '';
+      }
+
+      function loadSelection(selection, updateHistory = false) {
+        if (!selection) {
+          fileSelect.value = '';
+          contentFrame.style.display = 'none';
+          contentFrame.removeAttribute('src');
+          errorDiv.textContent = '';
+          showDeepLink(null);
+          if (updateHistory) updateDeepLink(null);
+          return;
+        }
+
+        // Only load entries returned by list-hips.py.
+        const option = findSelectionOption(selection);
+        if (!option) {
+          fileSelect.value = '';
+          contentFrame.style.display = 'none';
+          contentFrame.removeAttribute('src');
+          errorDiv.textContent = 'The survey in this deep link is not available.';
+          showDeepLink(null);
+          return;
+        }
+
+        fileSelect.value = option.value;
+        contentFrame.src = frameUrl(selection);
+        contentFrame.style.display = 'block';
+        errorDiv.textContent = '';
+        if (updateHistory) updateDeepLink(selection);
+        showDeepLink(selection);
       }
 
       async function loadFileList() {
@@ -126,6 +339,8 @@
 
           if (hipsFiles.length === 0) {
             errorDiv.textContent = 'No .hips files found.';
+          } else {
+            loadSelection(selectionFromUrl());
           }
         } catch (err) {
           errorDiv.textContent = 'Error loading file list: ' + err.message;
@@ -136,20 +351,37 @@
       fileSelect.addEventListener('change', (e) => {
         const raw = e.target.value;
         if (!raw) {
-          contentFrame.style.display = 'none';
-          contentFrame.src = '';
+          loadSelection(null, true);
           return;
         }
 
-        const sel = JSON.parse(raw);
-        if (sel.type === 'rgb') {
-          const q = new URLSearchParams({ red: sel.red, green: sel.green, blue: sel.blue });
-          contentFrame.src = 'rgb-viewer.html?' + q;
-        } else {
-          contentFrame.src = sel.dir + '/index.html';
+        loadSelection(JSON.parse(raw), true);
+      });
+
+      window.addEventListener('popstate', () => {
+        loadSelection(selectionFromUrl());
+      });
+
+      contentFrame.addEventListener('load', () => applyInitialViewToFrame());
+      deepLinkButton.addEventListener('click', async () => {
+        const link = deepLinkButton.textContent;
+        if (!link) return;
+        try {
+          await navigator.clipboard.writeText(link);
+          copyStatus.textContent = 'Deep link copied to clipboard.';
+        } catch (_) {
+          const textArea = document.createElement('textarea');
+          textArea.value = link;
+          textArea.style.position = 'fixed';
+          textArea.style.opacity = '0';
+          document.body.appendChild(textArea);
+          textArea.select();
+          const copied = document.execCommand('copy');
+          textArea.remove();
+          copyStatus.textContent = copied
+            ? 'Deep link copied to clipboard.'
+            : 'Could not copy automatically; select and copy the URL above.';
         }
-        contentFrame.style.display = 'block';
-        errorDiv.textContent = '';
       });
 
       loadFileList();

@@ -58,6 +58,17 @@
     let layers = {};
     let aladin = null;
 
+    function initialTarget() {
+      const ra = parseFloat(p.get('ra'));
+      const dec = parseFloat(p.get('dec'));
+      return Number.isFinite(ra) && Number.isFinite(dec) ? ra + ' ' + dec : '0 +40';
+    }
+
+    function initialFov() {
+      const fov = parseFloat(p.get('fov'));
+      return Number.isFinite(fov) && fov > 0 ? fov : 150;
+    }
+
     function showError(msg) {
       const el = document.getElementById('error');
       el.textContent = msg;
@@ -170,8 +181,8 @@
         layers.blue  = makeHiPS(paths.blue,  'blue',  cuts.blue[0],  cuts.blue[1],  true);
 
         aladin = A.aladin('#aladin-lite', {
-          target: '0 +40',
-          fov: 150,
+          target: initialTarget(),
+          fov: initialFov(),
           survey: layers.green,
         });
 

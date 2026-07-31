@@ -83,9 +83,21 @@
 <script type="text/javascript">
   let aladin = null;
   const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
+  const viewParams = new URLSearchParams(location.search);
 
   function getSurvey() {
     return aladin && aladin.getBaseImageLayer();
+  }
+
+  function initialTarget() {
+    const ra = parseFloat(viewParams.get('ra'));
+    const dec = parseFloat(viewParams.get('dec'));
+    return Number.isFinite(ra) && Number.isFinite(dec) ? ra + ' ' + dec : '0 +40';
+  }
+
+  function initialFov() {
+    const fov = parseFloat(viewParams.get('fov'));
+    return Number.isFinite(fov) && fov > 0 ? fov : 150;
   }
 
   async function loadDefaultCuts() {
@@ -120,8 +132,8 @@
     await loadDefaultCuts();
 
     aladin = A.aladin('#aladin-lite', {
-      target: '0 +40',
-      fov: 150,
+      target: initialTarget(),
+      fov: initialFov(),
       survey: A.imageHiPS('./', {
         name: 'Local HiPS',
         imgFormat: 'fits',
