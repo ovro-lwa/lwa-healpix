@@ -36,6 +36,34 @@ file fails screening, `coadd_fits` raises `ValueError`.
 Lower-level helper: compute the same center-patch dispersion statistic for a
 single FITS path (useful for inspection or custom pipelines).
 
+### `reproject_healpix_to_wcs`
+
+Reproject a 1-D HEALPix map onto an arbitrary 2-D celestial WCS
+(`target_header`). Returns `(data, footprint)`.
+
+### `nested_tile_header` / `iter_nested_tile_headers`
+
+Build local TAN (or SIN) WCS headers centered on nested HEALPix pixels at
+`nside_tile`, with pixel scale from `nside_map` and optional FOV `overlap`
+(default `0.2`). Typical detect defaults: `nside_map=2048`, `nside_tile=4`.
+
+### `healpix_to_hdu`
+
+Reproject a HEALPix map (and optional weight) onto a target header, blank
+low-weight / zero-footprint pixels to NaN, and return a `PrimaryHDU`. Does
+**not** set beam keywords (`BMAJ`/`BMIN`).
+
+### `write_healpix_fits` / `read_healpix_fits`
+
+Persist a HEALPix imaging product as a multi-extension FITS file:
+
+- HDU 0 (Primary): `NSIDE`, `ORDERING`, `COORDSYS`, `PIXTYPE=HEALPIX`
+- HDU 1 (`MAP`): 1-D float32 map
+- HDU 2 (`WEIGHT`): 1-D float32 weight
+
+Use `read_healpix_fits` to reload. This is an **image** coadd product, not a
+catalog HiPS map.
+
 ### `healpix_to_hips`
 
 Convert a 1-D HEALPix map into a HiPS tile set via an intermediate
@@ -108,9 +136,11 @@ examples are listed in the
 
 ## Future directions
 
-- **All-sky maps**: Generate all-sky maps for OVRO-LWA by coadding deep
-  images spanning a range of LST.
 - **Multi-frequency all-sky maps**: Use HiPS3D to create spectral-cube
   versions of the all-sky map, combining data across many frequencies.
 - **HEALPix-domain coadding**: Explore direct coadding of data in HEALPix
   projections rather than intermediate flat-sky grids.
+
+All-sky LST coadds via `coadd_fits(..., nside=...)` plus nested-tile reverse
+projection (`nested_tile_header` / `healpix_to_hdu`) are available for
+downstream PyBDSF (see `lwa-catalog` notebook `ovro_lwa_healpix_tile_detect.ipynb`).

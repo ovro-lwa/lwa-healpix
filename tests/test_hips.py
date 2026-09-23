@@ -106,6 +106,19 @@ class TestHealpixToHips:
         norder_dirs = sorted(out_dir.glob("Norder*"))
         assert len(norder_dirs) >= 1
 
+    def test_equatorial_frame(self, tmp_path):
+        nside = 8
+        healpix_map = np.ones(12 * nside**2, dtype=np.float32)
+        out_dir = tmp_path / "hips_equatorial"
+        healpix_to_hips(
+            healpix_map,
+            coord_frame="equatorial",
+            output_directory=out_dir,
+            threads=False,
+        )
+        assert (out_dir / "properties").exists()
+        assert (out_dir / "index.html").exists()
+
 
 # ---------------------------------------------------------------------------
 # fits_to_hips

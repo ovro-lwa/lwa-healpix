@@ -11,11 +11,17 @@ from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
-from reproject import reproject_from_healpix, reproject_interp
+from reproject import reproject_interp
 from reproject.hips import reproject_to_hips
 from reproject.hips.utils import load_properties, save_properties
 
 from .coadd import combine_fits_to_spectral_cube
+from .healpix_wcs import (
+    healpix_frame_for_reproject,
+    normalize_coord_frame,
+    pixel_scale_deg_for_nside,
+    reproject_healpix_to_wcs,
+)
 from .hips_moc import (
     C_LIGHT_M_S,
     coverage_freq_range_hz,
@@ -63,17 +69,28 @@ CUNIT2  = 'deg'
 )
 
 
+def _normalize_hips_frame(coord_frame: str) -> str:
+    """Normalize to ``galactic`` / ``equatorial`` / ``ecliptic`` for HiPS."""
+    return normalize_coord_frame(coord_frame)
+
+
+def _healpix_frame_for_reproject(coord_frame: str) -> str:
+    """Map frame names to ``reproject_from_healpix`` codes (``g`` / ``c``)."""
+    return healpix_frame_for_reproject(coord_frame)
+
+
 def _car_header_for_nside(
     nside: int,
     coord_frame: str = "galactic",
 ) -> fits.Header:
     """Build a full-sky CAR header whose pixel scale matches *nside*."""
-    pixel_scale = np.degrees(np.sqrt(4 * np.pi / (12 * nside**2)))
+    pixel_scale = pixel_scale_deg_for_nside(nside)
     nx = int(np.ceil(360.0 / pixel_scale))
     ny = int(np.ceil(180.0 / pixel_scale))
     cdelt = 360.0 / nx
 
-    if coord_frame == "galactic":
+    frame = _normalize_hips_frame(coord_frame)
+    if frame == "galactic":
         ctype1, ctype2 = "GLON-CAR", "GLAT-CAR"
     else:
         ctype1, ctype2 = "RA---CAR", "DEC--CAR"
@@ -84,7 +101,7 @@ def _car_header_for_nside(
     header["NAXIS2"] = ny
     header["CTYPE1"] = ctype1
     header["CRPIX1"] = (nx + 1) / 2.0
-    header["CRVAL1"] = 180.0 if coord_frame == "galactic" else 0.0
+    header["CRVAL1"] = 180.0 if frame == "galactic" else 0.0
     header["CDELT1"] = -cdelt
     header["CUNIT1"] = "deg"
     header["CTYPE2"] = ctype2
@@ -102,12 +119,16 @@ def _reproject_healpix_to_car(
     nested: bool = False,
 ) -> tuple[np.ndarray, fits.Header]:
     """Reproject a HEALPix map onto a Plate Carree (CAR) grid."""
+    hips_frame = _normalize_hips_frame(coord_frame)
     if target_header is None:
         nside = int(np.sqrt(len(healpix_map) / 12))
-        target_header = _car_header_for_nside(nside, coord_frame)
+        target_header = _car_header_for_nside(nside, hips_frame)
 
-    flat_array, _ = reproject_from_healpix(
-        (healpix_map, coord_frame), target_header, nested=nested
+    flat_array, _ = reproject_healpix_to_wcs(
+        healpix_map,
+        target_header,
+        coord_frame=hips_frame,
+        nested=nested,
     )
     return flat_array, target_header
 
@@ -357,7 +378,9 @@ def healpix_to_hips(
     healpix_map : numpy.ndarray
         1-D HEALPix map array.
     coord_frame : str, optional
-        Coordinate frame of the input map (e.g. ``"galactic"``).
+        Coordinate frame of the input map. Accepts HiPS-style names
+        (``\"galactic\"``, ``\"equatorial\"``, ``\"ecliptic\"``) and common
+        aliases (``\"g\"``/``\"c\"``, ``\"icrs\"``). Default is ``\"galactic\"``.
     output_directory : str or Path, optional
         Directory to write HiPS tiles into. Default is ``"hips_output"``.
     nested : bool, optional
@@ -376,8 +399,9 @@ def healpix_to_hips(
         Extra HiPS properties. An explicit ``hips_pixel_cut`` overrides
         *cut_percentiles*.
     """
+    hips_frame = _normalize_hips_frame(coord_frame)
     flat_array, header = _reproject_healpix_to_car(
-        healpix_map, coord_frame=coord_frame,
+        healpix_map, coord_frame=hips_frame,
         target_header=target_header, nested=nested,
     )
 
@@ -391,7 +415,7 @@ def healpix_to_hips(
     reproject_to_hips(
         (flat_array, header),
         output_directory=str(output_directory),
-        coord_system_out=coord_frame,
+        coord_system_out=hips_frame,
         reproject_function=reproject_interp,
         threads=threads,
         properties=hips_properties,
