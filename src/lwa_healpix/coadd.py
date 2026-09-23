@@ -11,6 +11,7 @@ from astropy import wcs as astropy_wcs
 from astropy.io import fits
 from reproject import reproject_interp, reproject_to_healpix
 
+from .healpix_wcs import healpix_frame_for_reproject
 from .utils import (
     _extract_2d,
     _find_spectral_axis,
@@ -214,7 +215,8 @@ def temporal_std_healpix(
     nside : int
         HEALPix ``nside`` parameter.
     coord_frame : str, optional
-        Output coordinate frame (e.g. ``"galactic"``).
+        Output coordinate frame (e.g. ``"galactic"``, ``"equatorial"``).
+        Aliases are mapped to reproject's ``g``/``c`` codes.
     nested : bool, optional
         If ``True``, NESTED pixel ordering; otherwise RING.
     min_elevation : float or None, optional
@@ -291,7 +293,7 @@ def temporal_std_healpix(
             data_2d[elevation < min_elevation] = np.nan
 
         reprojected, footprint = reproject_to_healpix(
-            (data_2d, wcs_2d), coord_frame,
+            (data_2d, wcs_2d), healpix_frame_for_reproject(coord_frame),
             nside=nside, nested=nested,
         )
 
@@ -353,8 +355,9 @@ def coadd_fits(
         WCS header for a 2-D target grid.  Must include ``NAXIS1`` and
         ``NAXIS2``.  Mutually exclusive with *nside*.
     coord_frame : str, optional
-        Coordinate frame for the output (e.g. ``"galactic"``).  Used
-        when *nside* is given.  Default is ``"galactic"``.
+        Coordinate frame for the output (e.g. ``"galactic"``, ``"equatorial"``,
+        ``"icrs"``, ``"g"``, ``"c"``).  Used when *nside* is given.  Aliases are
+        mapped to reproject's ``g``/``c`` codes.  Default is ``"galactic"``.
     nested : bool, optional
         HEALPix NESTED ordering.  Only relevant when *nside* is given.
     min_elevation : float or None, optional
@@ -426,7 +429,7 @@ def coadd_fits(
 
         if nside is not None:
             reprojected, footprint = reproject_to_healpix(
-                (data_2d, wcs_2d), coord_frame,
+                (data_2d, wcs_2d), healpix_frame_for_reproject(coord_frame),
                 nside=nside, nested=nested,
             )
         else:
