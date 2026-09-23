@@ -16,12 +16,7 @@ from reproject.hips import reproject_to_hips
 from reproject.hips.utils import load_properties, save_properties
 
 from .coadd import combine_fits_to_spectral_cube
-from .healpix_wcs import (
-    healpix_frame_for_reproject,
-    normalize_coord_frame,
-    pixel_scale_deg_for_nside,
-    reproject_healpix_to_wcs,
-)
+from .healpix_wcs import pixel_scale_deg_for_nside, reproject_healpix_to_wcs
 from .hips_moc import (
     C_LIGHT_M_S,
     coverage_freq_range_hz,
@@ -70,13 +65,30 @@ CUNIT2  = 'deg'
 
 
 def _normalize_hips_frame(coord_frame: str) -> str:
-    """Normalize to ``galactic`` / ``equatorial`` / ``ecliptic`` for HiPS."""
-    return normalize_coord_frame(coord_frame)
+    """Normalize to ``galactic`` / ``equatorial`` / ``ecliptic`` for HiPS.
+
+    These are the names accepted by ``reproject.hips.reproject_to_hips``
+    (``coord_system_out``), which differ from ``reproject_to_healpix`` /
+    ``reproject_from_healpix`` (``icrs`` / ``galactic`` / ``c`` / ``g``).
+    """
+    key = str(coord_frame).lower()
+    if key in {"galactic", "g"}:
+        return "galactic"
+    if key in {"equatorial", "celestial", "c", "icrs", "fk5"}:
+        return "equatorial"
+    if key in {"ecliptic", "e"}:
+        return "ecliptic"
+    return key
 
 
-def _healpix_frame_for_reproject(coord_frame: str) -> str:
-    """Map frame names to ``reproject_from_healpix`` codes (``g`` / ``c``)."""
-    return healpix_frame_for_reproject(coord_frame)
+def _healpix_frame_from_hips(hips_frame: str) -> str:
+    """Map a HiPS frame name to a ``reproject_from_healpix`` frame."""
+    if hips_frame == "equatorial":
+        return "icrs"
+    if hips_frame == "galactic":
+        return "galactic"
+    msg = f"Unsupported HiPS frame for HEALPix reverse project: {hips_frame!r}"
+    raise ValueError(msg)
 
 
 def _car_header_for_nside(
@@ -127,7 +139,7 @@ def _reproject_healpix_to_car(
     flat_array, _ = reproject_healpix_to_wcs(
         healpix_map,
         target_header,
-        coord_frame=hips_frame,
+        coord_frame=_healpix_frame_from_hips(hips_frame),
         nested=nested,
     )
     return flat_array, target_header

@@ -10,11 +10,9 @@ from .coadd import (
 )
 from .healpix_io import read_healpix_fits, write_healpix_fits
 from .healpix_wcs import (
-    healpix_frame_for_reproject,
     healpix_to_hdu,
     iter_nested_tile_headers,
     nested_tile_header,
-    normalize_coord_frame,
     pixel_scale_deg_for_nside,
     reproject_healpix_to_wcs,
 )

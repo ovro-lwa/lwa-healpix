@@ -8,8 +8,6 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 
-from .healpix_wcs import normalize_coord_frame
-
 __all__ = [
     "read_healpix_fits",
     "write_healpix_fits",
@@ -17,25 +15,28 @@ __all__ = [
 
 
 def _coordsys_code(coord_frame: str) -> str:
-    frame = normalize_coord_frame(coord_frame)
-    if frame == "galactic":
+    """Map reproject healpix frame names to HEALPix FITS ``COORDSYS``."""
+    key = str(coord_frame).lower()
+    if key in {"g", "galactic"}:
         return "G"
-    if frame == "equatorial":
+    if key in {"c", "icrs", "fk5"}:
         return "C"
-    msg = f"Unsupported coord_frame for HEALPix FITS: {coord_frame!r}"
+    msg = (
+        f"Unsupported coord_frame for HEALPix FITS: {coord_frame!r} "
+        "(use reproject names: 'icrs'/'c' or 'galactic'/'g')"
+    )
     raise ValueError(msg)
 
 
 def _frame_from_coordsys(code: str) -> str:
+    """Map HEALPix FITS ``COORDSYS`` to a reproject healpix frame name."""
     key = str(code).strip().upper()
-    if key in {"G", "GALACTIC"}:
+    if key == "G":
         return "galactic"
-    if key in {"C", "E", "EQUATORIAL", "CELESTIAL"}:
-        # HEALPix FITS uses C for celestial; E is ecliptic — treat E as equatorial
-        # only when explicitly equatorial aliases are used; map E → ecliptic.
-        if key == "E":
-            return "ecliptic"
-        return "equatorial"
+    if key == "C":
+        return "icrs"
+    if key == "E":
+        return "ecliptic"
     msg = f"Unrecognized COORDSYS={code!r}"
     raise ValueError(msg)
 
@@ -47,7 +48,7 @@ def write_healpix_fits(
     *,
     nside: int,
     nested: bool = True,
-    coord_frame: str = "equatorial",
+    coord_frame: str = "icrs",
     overwrite: bool = False,
 ) -> Path:
     """Write a multi-extension FITS with Primary metadata + MAP + WEIGHT.
@@ -70,7 +71,8 @@ def write_healpix_fits(
     nested : bool, optional
         Write ``ORDERING=NESTED`` if ``True``, else ``RING``.
     coord_frame : str, optional
-        ``equatorial`` → ``COORDSYS=C``; ``galactic`` → ``G``.
+        Reproject healpix frame (``\"icrs\"``/``\"c\"`` → ``COORDSYS=C``;
+        ``\"galactic\"``/``\"g\"`` → ``G``). Default is ``\"icrs\"``.
     overwrite : bool, optional
         Overwrite existing file.
     """
@@ -128,7 +130,8 @@ def read_healpix_fits(
     weight : numpy.ndarray
         1-D ``float32`` WEIGHT extension.
     meta : dict
-        Keys ``nside``, ``nested``, ``coord_frame``.
+        Keys ``nside``, ``nested``, ``coord_frame`` (``\"icrs\"`` or
+        ``\"galactic\"``).
     """
     path = Path(path)
     with fits.open(path, memmap=False) as hdul:

@@ -148,10 +148,9 @@ class TestCoaddFits:
         assert combined.shape == (npix,)
         assert np.any(weights > 0)
 
-    def test_healpix_equatorial_alias(self, wide_fits_files):
-        """``equatorial`` must map to reproject's ``c`` (ICRS), not fail."""
+    def test_healpix_icrs(self, wide_fits_files):
         combined, weights = coadd_fits(
-            wide_fits_files, nside=4, coord_frame="equatorial",
+            wide_fits_files, nside=4, coord_frame="icrs",
         )
         assert combined.shape == (12 * 4**2,)
         assert np.any(weights > 0)

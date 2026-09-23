@@ -11,37 +11,12 @@ from astropy.io import fits
 from reproject import reproject_from_healpix
 
 __all__ = [
-    "healpix_frame_for_reproject",
     "healpix_to_hdu",
     "iter_nested_tile_headers",
     "nested_tile_header",
-    "normalize_coord_frame",
     "pixel_scale_deg_for_nside",
     "reproject_healpix_to_wcs",
 ]
-
-
-def normalize_coord_frame(coord_frame: str) -> str:
-    """Normalize to ``galactic`` / ``equatorial`` / ``ecliptic``."""
-    key = str(coord_frame).lower()
-    if key in {"galactic", "g"}:
-        return "galactic"
-    if key in {"equatorial", "celestial", "c", "icrs", "fk5"}:
-        return "equatorial"
-    if key in {"ecliptic", "e"}:
-        return "ecliptic"
-    return key
-
-
-def healpix_frame_for_reproject(coord_frame: str) -> str:
-    """Map frame names to ``reproject_from_healpix`` codes (``g`` / ``c``)."""
-    frame = normalize_coord_frame(coord_frame)
-    if frame == "galactic":
-        return "g"
-    if frame == "equatorial":
-        return "c"
-    msg = f"Unsupported HEALPix input frame for reproject: {coord_frame!r}"
-    raise ValueError(msg)
 
 
 def pixel_scale_deg_for_nside(nside: int) -> float:
@@ -51,6 +26,10 @@ def pixel_scale_deg_for_nside(nside: int) -> float:
 
 def _is_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
+
+
+def _is_galactic_frame(coord_frame: str) -> bool:
+    return str(coord_frame).lower() in {"g", "galactic"}
 
 
 def reproject_healpix_to_wcs(
@@ -70,8 +49,10 @@ def reproject_healpix_to_wcs(
         WCS header describing the output grid (must include ``NAXIS1`` /
         ``NAXIS2`` and celestial ``CTYPE`` / ``CRVAL`` / ``CDELT`` / ``CRPIX``).
     coord_frame : str, optional
-        Coordinate frame of *healpix_map* (``galactic`` / ``equatorial`` and
-        aliases). Must match how the map was built. Default is ``galactic``.
+        Frame of *healpix_map*, passed to
+        :func:`reproject.reproject_from_healpix` (e.g. ``\"galactic\"``,
+        ``\"icrs\"``, ``\"g\"``, ``\"c\"``). Must match how the map was built.
+        Default is ``\"galactic\"``.
     nested : bool, optional
         If ``True``, *healpix_map* uses NESTED ordering. Default is ``False``
         (RING).
@@ -90,9 +71,8 @@ def reproject_healpix_to_wcs(
         msg = "target_header must include NAXIS1 and NAXIS2"
         raise ValueError(msg)
 
-    frame_code = healpix_frame_for_reproject(coord_frame)
     data, footprint = reproject_from_healpix(
-        (healpix_map, frame_code),
+        (healpix_map, coord_frame),
         target_header,
         nested=nested,
     )
@@ -106,7 +86,7 @@ def nested_tile_header(
     nside_map: int,
     overlap: float = 0.2,
     ctype: str = "TAN",
-    coord_frame: str = "equatorial",
+    coord_frame: str = "icrs",
 ) -> fits.Header:
     """Build a local TAN/SIN WCS header centered on a nested HEALPix pixel.
 
@@ -124,8 +104,10 @@ def nested_tile_header(
     ctype : {"TAN", "SIN"}, optional
         Celestial projection. Default is ``TAN``.
     coord_frame : str, optional
-        Frame for ``CRVAL`` / ``CTYPE`` (``equatorial`` → ``RA---``/``DEC--``;
-        ``galactic`` → ``GLON-``/``GLAT-``). Default is ``equatorial``.
+        Frame for ``CRVAL`` / ``CTYPE``. Use reproject healpix names:
+        ``\"galactic\"`` / ``\"g\"`` → ``GLON-``/``GLAT-``; otherwise
+        ``RA---``/``DEC--`` (e.g. ``\"icrs\"``, ``\"c\"``). Default is
+        ``\"icrs\"``.
 
     Returns
     -------
@@ -155,11 +137,7 @@ def nested_tile_header(
         msg = f"ctype must be 'TAN' or 'SIN', got {ctype!r}"
         raise ValueError(msg)
 
-    frame = normalize_coord_frame(coord_frame)
-    if frame not in {"equatorial", "galactic"}:
-        msg = f"nested_tile_header supports equatorial/galactic, got {coord_frame!r}"
-        raise ValueError(msg)
-
+    galactic = _is_galactic_frame(coord_frame)
     theta, phi = hp.pix2ang(int(nside_tile), int(ipix), nest=True)
     lon_deg = float(np.degrees(phi))
     lat_deg = float(90.0 - np.degrees(theta))
@@ -169,7 +147,7 @@ def nested_tile_header(
     fov_deg = tile_scale * (1.0 + float(overlap))
     naxis = max(1, int(np.ceil(fov_deg / map_scale)))
 
-    if frame == "galactic":
+    if galactic:
         ctype1, ctype2 = f"GLON-{ctype_key}", f"GLAT-{ctype_key}"
     else:
         ctype1, ctype2 = f"RA---{ctype_key}", f"DEC--{ctype_key}"
@@ -188,7 +166,7 @@ def nested_tile_header(
     header["CDELT2"] = map_scale
     header["CUNIT1"] = "deg"
     header["CUNIT2"] = "deg"
-    if frame == "equatorial":
+    if not galactic:
         header["RADESYS"] = "ICRS"
     return header
 
@@ -199,7 +177,7 @@ def iter_nested_tile_headers(
     *,
     overlap: float = 0.2,
     ctype: str = "TAN",
-    coord_frame: str = "equatorial",
+    coord_frame: str = "icrs",
     weight: np.ndarray | None = None,
     min_weight_sum: float = 0.0,
 ) -> Iterator[tuple[int, fits.Header]]:
@@ -219,7 +197,6 @@ def iter_nested_tile_headers(
                     f"({12 * int(nside_map) ** 2}), got {weight.size}"
                 )
                 raise ValueError(msg)
-            # Nested parent ipix maps to a contiguous block of child pixels.
             start = int(ipix) * ratio
             stop = start + ratio
             if float(np.nansum(weight[start:stop])) <= float(min_weight_sum):
@@ -239,7 +216,7 @@ def healpix_to_hdu(
     target_header: fits.Header,
     *,
     weight: np.ndarray | None = None,
-    coord_frame: str = "equatorial",
+    coord_frame: str = "icrs",
     nested: bool = True,
     header_updates: Mapping[str, Any] | None = None,
 ) -> fits.PrimaryHDU:
@@ -258,7 +235,8 @@ def healpix_to_hdu(
         Optional 1-D weight map (same ordering as *healpix_map*). When given,
         pixels with reprojected weight ``<= 0`` are blanked.
     coord_frame : str, optional
-        Frame of the HEALPix map. Default is ``equatorial``.
+        Frame of the HEALPix map (reproject healpix name). Default is
+        ``\"icrs\"``.
     nested : bool, optional
         NESTED ordering if ``True``. Default is ``True``.
     header_updates : mapping or None, optional

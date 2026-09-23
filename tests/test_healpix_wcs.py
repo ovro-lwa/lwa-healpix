@@ -9,11 +9,9 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 from lwa_healpix.healpix_wcs import (
-    healpix_frame_for_reproject,
     healpix_to_hdu,
     iter_nested_tile_headers,
     nested_tile_header,
-    normalize_coord_frame,
     pixel_scale_deg_for_nside,
     reproject_healpix_to_wcs,
 )
@@ -50,28 +48,13 @@ def _sin_header(**kwargs) -> fits.Header:
     return hdr
 
 
-class TestFrameHelpers:
-    def test_normalize_aliases(self):
-        assert normalize_coord_frame("g") == "galactic"
-        assert normalize_coord_frame("icrs") == "equatorial"
-        assert normalize_coord_frame("e") == "ecliptic"
-
-    def test_reproject_frame_codes(self):
-        assert healpix_frame_for_reproject("galactic") == "g"
-        assert healpix_frame_for_reproject("equatorial") == "c"
-
-    def test_ecliptic_unsupported_for_reproject(self):
-        with pytest.raises(ValueError, match="Unsupported HEALPix input frame"):
-            healpix_frame_for_reproject("ecliptic")
-
-
 class TestReprojectHealpixToWcs:
     def test_constant_map_tan_finite_where_footprint(self):
         nside = 16
         healpix_map = np.full(12 * nside**2, 3.5, dtype=np.float64)
         hdr = _tan_header()
         data, footprint = reproject_healpix_to_wcs(
-            healpix_map, hdr, coord_frame="equatorial", nested=False,
+            healpix_map, hdr, coord_frame="icrs", nested=False,
         )
         assert data.shape == (32, 32)
         assert footprint.shape == (32, 32)
@@ -85,7 +68,7 @@ class TestReprojectHealpixToWcs:
         data, footprint = reproject_healpix_to_wcs(
             healpix_map,
             _sin_header(crval2=45.0),
-            coord_frame="equatorial",
+            coord_frame="icrs",
         )
         assert data.shape == (32, 32)
         assert (footprint > 0).any()
@@ -96,7 +79,7 @@ class TestReprojectHealpixToWcs:
         data, footprint = reproject_healpix_to_wcs(
             healpix_map,
             _tan_header(naxis=16, cdelt=1.0),
-            coord_frame="equatorial",
+            coord_frame="icrs",
             nested=True,
         )
         assert data.shape == (16, 16)
@@ -112,7 +95,7 @@ class TestReprojectHealpixToWcs:
         healpix_map = np.ones(12 * nside**2)
         hdr = fits.Header({"CTYPE1": "RA---TAN", "CTYPE2": "DEC--TAN"})
         with pytest.raises(ValueError, match="NAXIS1"):
-            reproject_healpix_to_wcs(healpix_map, hdr, coord_frame="equatorial")
+            reproject_healpix_to_wcs(healpix_map, hdr, coord_frame="icrs")
 
 
 class TestNestedTileHeader:
@@ -158,7 +141,7 @@ class TestHealpixToHdu:
             np.ones(npix),
             hdr,
             weight=np.zeros(npix),
-            coord_frame="equatorial",
+            coord_frame="icrs",
             nested=True,
         )
         assert hdu.data.dtype == np.float32
@@ -173,7 +156,7 @@ class TestHealpixToHdu:
             np.full(npix, 2.5),
             hdr,
             weight=np.ones(npix),
-            coord_frame="equatorial",
+            coord_frame="icrs",
             nested=True,
         )
         assert np.isfinite(hdu.data).any()

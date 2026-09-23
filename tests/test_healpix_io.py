@@ -20,12 +20,12 @@ def test_write_read_roundtrip(tmp_path):
         weight,
         nside=nside,
         nested=True,
-        coord_frame="equatorial",
+        coord_frame="icrs",
     )
     m2, w2, meta = read_healpix_fits(path)
     assert meta["nside"] == nside
     assert meta["nested"] is True
-    assert meta["coord_frame"] == "equatorial"
+    assert meta["coord_frame"] == "icrs"
     np.testing.assert_array_equal(m2, healpix_map)
     np.testing.assert_allclose(w2, weight)
 
