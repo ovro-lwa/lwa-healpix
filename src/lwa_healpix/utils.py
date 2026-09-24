@@ -12,13 +12,154 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 __all__ = [
+    "OVRO_LATITUDE_DEG",
+    "altaz_to_ha_dec",
     "center_patch_rms_from_fits",
+    "elliptical_mask_edge_zenith_angle_deg",
     "group_pipeline_files",
     "lst_hour_from_path",
+    "parallactic_angle_deg",
+    "parallactic_delta_q_edge_summary",
 ]
 
 _FREQ_DIR_RE = re.compile(r"(\d+)\s*MHz", re.IGNORECASE)
 _LST_DIR_RE = re.compile(r"^(\d+)h$", re.IGNORECASE)
+
+# Owens Valley Radio Observatory (same value as lwa_catalog.constants)
+OVRO_LATITUDE_DEG: float = 37.239777
+
+_CARDINAL_AZ_DEG: tuple[float, ...] = tuple(float(a) for a in range(0, 360, 45))
+_CARDINAL_LABELS: tuple[str, ...] = (
+    "N", "NE", "E", "SE", "S", "SW", "W", "NW",
+)
+
+
+def _resolve_elevation_cut(
+    *,
+    min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
+) -> tuple[str, float] | tuple[str, float, float] | None:
+    """Validate elevation kwargs.
+
+    Returns
+    -------
+    None
+        No blanking.
+    ``(\"circular\", elev)``
+        Scalar circular minimum elevation (degrees).
+    ``(\"ellipse\", elev_ns, elev_ew)``
+        Elliptical cut with N/S and E/W minimum elevations (degrees).
+    """
+    has_scalar = min_elevation is not None
+    has_ns = min_elevation_ns is not None
+    has_ew = min_elevation_ew is not None
+    if has_ns != has_ew:
+        msg = "min_elevation_ns and min_elevation_ew must be set together"
+        raise ValueError(msg)
+    if has_scalar and (has_ns or has_ew):
+        msg = (
+            "Use either min_elevation (circular) or "
+            "min_elevation_ns/min_elevation_ew (elliptical), not both"
+        )
+        raise ValueError(msg)
+    if has_scalar:
+        return ("circular", float(min_elevation))
+    if has_ns and has_ew:
+        return ("ellipse", float(min_elevation_ns), float(min_elevation_ew))
+    return None
+
+
+def elliptical_mask_edge_zenith_angle_deg(
+    az_deg: float | np.ndarray,
+    *,
+    min_elevation_ns: float,
+    min_elevation_ew: float,
+) -> float | np.ndarray:
+    """Zenith angle (deg) of the elliptical elevation-mask edge at azimuth *az_deg*.
+
+    Azimuth is measured from north through east (same as astronomical PA from
+    zenith). Semi-axes are ``z_ns = 90 − elev_ns`` and ``z_ew = 90 − elev_ew``.
+    """
+    z_ns = 90.0 - float(min_elevation_ns)
+    z_ew = 90.0 - float(min_elevation_ew)
+    if z_ns <= 0.0 or z_ew <= 0.0:
+        msg = "min_elevation_ns/ew must be < 90 deg"
+        raise ValueError(msg)
+    az = np.deg2rad(np.asarray(az_deg, dtype=float))
+    # z such that (z sin / z_ew)^2 + (z cos / z_ns)^2 = 1
+    denom = np.sqrt((np.sin(az) / z_ew) ** 2 + (np.cos(az) / z_ns) ** 2)
+    z = 1.0 / denom
+    if np.ndim(az_deg) == 0:
+        return float(z)
+    return z
+
+
+def _elevation_outside_mask(
+    z_deg: np.ndarray,
+    pa_rad: np.ndarray,
+    *,
+    min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
+) -> np.ndarray:
+    """Return True where pixels lie outside the elevation keep-mask (should blank)."""
+    cut = _resolve_elevation_cut(
+        min_elevation=min_elevation,
+        min_elevation_ns=min_elevation_ns,
+        min_elevation_ew=min_elevation_ew,
+    )
+    if cut is None:
+        return np.zeros(np.shape(z_deg), dtype=bool)
+    z = np.asarray(z_deg, dtype=float)
+    if cut[0] == "circular":
+        elev_min = cut[1]
+        return z > (90.0 - elev_min)
+    _, elev_ns, elev_ew = cut
+    z_ns = 90.0 - elev_ns
+    z_ew = 90.0 - elev_ew
+    if z_ns <= 0.0 or z_ew <= 0.0:
+        msg = "min_elevation_ns/ew must be < 90 deg"
+        raise ValueError(msg)
+    pa = np.asarray(pa_rad, dtype=float)
+    r2 = (z * np.sin(pa) / z_ew) ** 2 + (z * np.cos(pa) / z_ns) ** 2
+    return r2 > 1.0
+
+
+def _pixel_zenith_angle_pa(
+    wcs_2d: wcs.WCS,
+    shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(zenith_angle_deg, pa_rad)`` for every pixel (CRVAL = zenith)."""
+    ny, nx = shape
+    y, x = np.mgrid[:ny, :nx]
+    sky = wcs_2d.pixel_to_world(x, y)
+    center = SkyCoord(
+        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
+        unit="deg", frame=sky.frame.name,
+    )
+    z_deg = sky.separation(center).deg
+    pa_rad = center.position_angle(sky).rad
+    return np.asarray(z_deg, dtype=float), np.asarray(pa_rad, dtype=float)
+
+
+def _pixel_zenith_angle_pa_window(
+    wcs_2d: wcs.WCS,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Zenith angle / PA for a pixel window; same model as `_pixel_zenith_angle_pa`."""
+    y, x = np.mgrid[y0:y1, x0:x1]
+    sky = wcs_2d.pixel_to_world(x, y)
+    center = SkyCoord(
+        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
+        unit="deg", frame=sky.frame.name,
+    )
+    z_deg = sky.separation(center).deg
+    pa_rad = center.position_angle(sky).rad
+    return np.asarray(z_deg, dtype=float), np.asarray(pa_rad, dtype=float)
 
 
 def _pixel_elevations(wcs_2d: wcs.WCS, shape: tuple[int, int]) -> np.ndarray:
@@ -28,14 +169,145 @@ def _pixel_elevations(wcs_2d: wcs.WCS, shape: tuple[int, int]) -> np.ndarray:
     the image reference point (``CRVAL``), which is assumed to be the
     local zenith.
     """
-    ny, nx = shape
-    y, x = np.mgrid[:ny, :nx]
-    sky = wcs_2d.pixel_to_world(x, y)
-    center = SkyCoord(
-        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
-        unit="deg", frame=sky.frame.name,
+    z_deg, _ = _pixel_zenith_angle_pa(wcs_2d, shape)
+    return 90.0 - z_deg
+
+
+def _blank_data_outside_elevation(
+    data_2d: np.ndarray,
+    wcs_2d: wcs.WCS,
+    *,
+    min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
+) -> np.ndarray:
+    """Return a copy of *data_2d* with outside-mask pixels set to NaN."""
+    cut = _resolve_elevation_cut(
+        min_elevation=min_elevation,
+        min_elevation_ns=min_elevation_ns,
+        min_elevation_ew=min_elevation_ew,
     )
-    return 90.0 - sky.separation(center).deg
+    if cut is None:
+        return data_2d
+    z_deg, pa_rad = _pixel_zenith_angle_pa(wcs_2d, data_2d.shape)
+    outside = _elevation_outside_mask(
+        z_deg,
+        pa_rad,
+        min_elevation=min_elevation,
+        min_elevation_ns=min_elevation_ns,
+        min_elevation_ew=min_elevation_ew,
+    )
+    out = np.array(data_2d, copy=True, dtype=np.float64)
+    out[outside] = np.nan
+    return out
+
+
+def _wrap180(deg: np.ndarray | float) -> np.ndarray | float:
+    """Wrap angle(s) to ``(-180, 180]`` degrees."""
+    x = np.asarray(deg, dtype=float)
+    wrapped = (x + 180.0) % 360.0 - 180.0
+    if np.ndim(deg) == 0:
+        return float(wrapped)
+    return wrapped
+
+
+def altaz_to_ha_dec(
+    alt_deg: float,
+    az_deg: float,
+    *,
+    latitude_deg: float = OVRO_LATITUDE_DEG,
+) -> tuple[float, float]:
+    """Convert altitude/azimuth (deg; az N→E) to hour angle and declination (deg)."""
+    alt = np.deg2rad(float(alt_deg))
+    az = np.deg2rad(float(az_deg))
+    lat = np.deg2rad(float(latitude_deg))
+    sin_dec = np.sin(alt) * np.sin(lat) + np.cos(alt) * np.cos(lat) * np.cos(az)
+    sin_dec = float(np.clip(sin_dec, -1.0, 1.0))
+    dec = float(np.arcsin(sin_dec))
+    cos_dec = np.cos(dec)
+    if abs(cos_dec) < 1e-12:
+        ha = 0.0
+    else:
+        sin_ha = -np.cos(alt) * np.sin(az) / cos_dec
+        cos_ha = (
+            np.sin(alt) * np.cos(lat) - np.cos(alt) * np.sin(lat) * np.cos(az)
+        ) / cos_dec
+        ha = float(np.arctan2(sin_ha, cos_ha))
+    return float(np.rad2deg(ha)), float(np.rad2deg(dec))
+
+
+def parallactic_angle_deg(
+    ha_deg: float | np.ndarray,
+    dec_deg: float,
+    *,
+    latitude_deg: float = OVRO_LATITUDE_DEG,
+) -> float | np.ndarray:
+    """Parallactic angle (deg) for hour angle / declination at *latitude_deg*."""
+    ha = np.deg2rad(np.asarray(ha_deg, dtype=float))
+    dec = np.deg2rad(float(dec_deg))
+    lat = np.deg2rad(float(latitude_deg))
+    q = np.arctan2(
+        np.sin(ha),
+        np.cos(dec) * np.tan(lat) - np.sin(dec) * np.cos(ha),
+    )
+    q_deg = np.rad2deg(q)
+    if np.ndim(ha_deg) == 0:
+        return float(q_deg)
+    return q_deg
+
+
+def parallactic_delta_q_edge_summary(
+    *,
+    min_elevation_ns: float,
+    min_elevation_ew: float,
+    latitude_deg: float = OVRO_LATITUDE_DEG,
+) -> list[dict[str, float | str]]:
+    """1-hour parallactic-angle change at 8 cardinal elliptical-mask edges.
+
+    For each azimuth ``0, 45, …, 315°``, place a point on the elevation-mask
+    edge, convert to ``(HA₀, Dec)``, then for LST bins ``h = 0…23`` compute
+    ``Δq_h = wrap180(q(HA₀ + (h+1)·15°) − q(HA₀ + h·15°))``.  Returns one
+    dict per direction with range / min / max / median of ``|Δq|``.
+    """
+    rows: list[dict[str, float | str]] = []
+    for az, label in zip(_CARDINAL_AZ_DEG, _CARDINAL_LABELS, strict=True):
+        z_edge = float(
+            elliptical_mask_edge_zenith_angle_deg(
+                az,
+                min_elevation_ns=min_elevation_ns,
+                min_elevation_ew=min_elevation_ew,
+            )
+        )
+        elev = 90.0 - z_edge
+        ha0, dec = altaz_to_ha_dec(elev, az, latitude_deg=latitude_deg)
+        delta: list[float] = []
+        for h in range(24):
+            ha_a = ha0 + h * 15.0
+            ha_b = ha0 + (h + 1) * 15.0
+            dq = _wrap180(
+                parallactic_angle_deg(ha_b, dec, latitude_deg=latitude_deg)
+                - parallactic_angle_deg(ha_a, dec, latitude_deg=latitude_deg)
+            )
+            delta.append(float(dq))
+        darr = np.asarray(delta, dtype=float)
+        abs_d = np.abs(darr)
+        rows.append(
+            {
+                "direction": label,
+                "az_deg": float(az),
+                "elev_edge_deg": elev,
+                "zenith_angle_deg": z_edge,
+                "dec_deg": dec,
+                "ha0_deg": ha0,
+                "dq_range_deg": float(np.nanmax(darr) - np.nanmin(darr)),
+                "dq_min_deg": float(np.nanmin(darr)),
+                "dq_max_deg": float(np.nanmax(darr)),
+                "abs_dq_min_deg": float(np.nanmin(abs_d)),
+                "abs_dq_max_deg": float(np.nanmax(abs_d)),
+                "abs_dq_median_deg": float(np.nanmedian(abs_d)),
+            }
+        )
+    return rows
 
 
 def _find_spectral_axis(header: fits.Header) -> int:
@@ -144,13 +416,8 @@ def _pixel_elevations_window(
     x1: int,
 ) -> np.ndarray:
     """Elevation (deg) for a pixel window; same zenith model as `_pixel_elevations`."""
-    y, x = np.mgrid[y0:y1, x0:x1]
-    sky = wcs_2d.pixel_to_world(x, y)
-    center = SkyCoord(
-        wcs_2d.wcs.crval[0], wcs_2d.wcs.crval[1],
-        unit="deg", frame=sky.frame.name,
-    )
-    return 90.0 - sky.separation(center).deg
+    z_deg, _ = _pixel_zenith_angle_pa_window(wcs_2d, y0, y1, x0, x1)
+    return 90.0 - z_deg
 
 
 def center_patch_rms_from_fits(
@@ -160,11 +427,17 @@ def center_patch_rms_from_fits(
     center_max_pixels: int | None = 512,
     metric: str = "std",
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
 ) -> float:
     """Cheap quality metric: dispersion on a central patch only (memmap slice).
 
     Reads only the central region of the spatial plane.  Supports 2-D images
     and 4-D LWA-style arrays whose last two axes are spatial.
+
+    Elevation blanking uses the same circular / elliptical rules as
+    :func:`~lwa_healpix.coadd.coadd_fits` (``min_elevation`` or
+    ``min_elevation_ns`` / ``min_elevation_ew``).
     """
     path = Path(path)
     with fits.open(path, memmap=True) as hdul:
@@ -198,10 +471,22 @@ def center_patch_rms_from_fits(
         else:
             return float("nan")
 
-        if min_elevation is not None:
-            elev = _pixel_elevations_window(wcs_2d, sy, ey, sx, ex)
+        cut = _resolve_elevation_cut(
+            min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
+        )
+        if cut is not None:
+            z_deg, pa_rad = _pixel_zenith_angle_pa_window(wcs_2d, sy, ey, sx, ex)
+            outside = _elevation_outside_mask(
+                z_deg,
+                pa_rad,
+                min_elevation=min_elevation,
+                min_elevation_ns=min_elevation_ns,
+                min_elevation_ew=min_elevation_ew,
+            )
             patch = patch.copy()
-            patch[elev < min_elevation] = np.nan
+            patch[outside] = np.nan
 
         return _rms_from_finite_values(patch, metric)
 

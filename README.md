@@ -17,7 +17,15 @@ pip install .
 Reproject a list of FITS images onto either a HEALPix grid (`nside`) or a
 2-D target image (`target_header`) and coadd them with footprint-based
 weighting. Supports an optional minimum-elevation mask to exclude noisy
-data near the horizon. Returns the combined map and total weight arrays.
+data near the horizon:
+
+- **Circular:** `min_elevation=10` blanks pixels with elevation below 10°.
+- **Elliptical:** `min_elevation_ns=15, min_elevation_ew=40` keeps an
+  ellipse in the zenith-angle plane (stricter toward east/west). Elevation
+  is `90° − separation(pixel, CRVAL)` with CRVAL treated as local zenith;
+  azimuth is the position angle from zenith (N→E).
+
+Returns the combined map and total weight arrays.
 
 **Quality screening (optional):** If you set `quality_max_rms` and/or
 `quality_outlier_sigma`, each file is checked *before* reprojection using
@@ -27,9 +35,17 @@ standard deviation (`quality_metric="std"`) or a robust scale
 `1.4826 × MAD` (`quality_metric="mad_sigma"`). Use `quality_max_rms` for an
 absolute ceiling in the same units as the image data (`BUNIT`). Use
 `quality_outlier_sigma` to drop images whose metric exceeds
-`median + σ × 1.4826 × MAD` over the batch. If `min_elevation` is set, the
-same horizon blanking is applied to that patch before the metric. If every
-file fails screening, `coadd_fits` raises `ValueError`.
+`median + σ × 1.4826 × MAD` over the batch. If elevation blanking is set
+(circular or elliptical), the same horizon mask is applied to that patch
+before the metric. If every file fails screening, `coadd_fits` raises
+`ValueError`.
+
+### `parallactic_delta_q_edge_summary`
+
+Diagnostic table: for eight cardinal directions on the elliptical elevation
+mask edge, compute the range of 1-hour parallactic-angle change (`Δq`) over
+24 LST bins. Useful as a projection/stacking-error check when coadding
+hours with elongated PSFs.
 
 ### `center_patch_rms_from_fits`
 

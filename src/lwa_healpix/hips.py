@@ -506,6 +506,8 @@ def fits_to_hips_cube(
     coord_frame: str = "galactic",
     freq_values: list[float] | np.ndarray | None = None,
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
     quality_max_rms: float | None = None,
     quality_outlier_sigma: float | None = None,
     quality_metric: Literal["std", "mad_sigma"] = "std",
@@ -559,9 +561,12 @@ def fits_to_hips_cube(
         *file_paths*).  Passed through to
         :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
     min_elevation : float or None, optional
-        Minimum elevation in degrees.  Passed through to
+        Circular minimum elevation in degrees.  Passed through to
         :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube` for
         per-channel coadding.
+    min_elevation_ns, min_elevation_ew : float or None, optional
+        Elliptical elevation cut; passed through to
+        :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
     quality_max_rms : float or None, optional
         Passed to :func:`~lwa_healpix.coadd.combine_fits_to_spectral_cube`.
     quality_outlier_sigma : float or None, optional
@@ -604,6 +609,8 @@ def fits_to_hips_cube(
             file_paths, cube_path,
             freq_values=freq_values,
             min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
             quality_max_rms=quality_max_rms,
             quality_outlier_sigma=quality_outlier_sigma,
             quality_metric=quality_metric,

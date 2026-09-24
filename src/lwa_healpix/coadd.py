@@ -12,9 +12,9 @@ from astropy.io import fits
 from reproject import reproject_interp, reproject_to_healpix
 
 from .utils import (
+    _blank_data_outside_elevation,
     _extract_2d,
     _find_spectral_axis,
-    _pixel_elevations,
     center_patch_rms_from_fits,
     lst_hour_from_path,
 )
@@ -66,6 +66,8 @@ def screen_fits_by_quality(
     quality_center_fraction: float = 0.25,
     quality_center_max_pixels: int | None = 512,
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
     one_per_lst_hour: bool = False,
 ) -> list[Path]:
     """Return FITS paths that pass center-patch quality screening.
@@ -73,8 +75,10 @@ def screen_fits_by_quality(
     Opens each file with memory mapping, computes dispersion (std or
     MAD-based scale) on a **central patch** only, and drops files that
     fail the thresholds.  Units for ``quality_max_rms`` match the image
-    data (see ``BUNIT``).  When ``min_elevation`` is set, the same
-    blanking is applied to the central patch before the metric.
+    data (see ``BUNIT``).  When elevation blanking is set (circular
+    ``min_elevation`` or elliptical ``min_elevation_ns`` /
+    ``min_elevation_ew``), the same mask is applied to the central patch
+    before the metric.
 
     When ``one_per_lst_hour`` is ``True``, pipeline deep images that
     share an LST hour (e.g. multiple nights at ``10h``) are reduced to
@@ -100,8 +104,11 @@ def screen_fits_by_quality(
     quality_center_max_pixels : int or None, optional
         Maximum patch size in pixels per axis (default ``512``).
     min_elevation : float or None, optional
-        Minimum elevation above the horizon in degrees.  Pixels below
-        this elevation are blanked before the metric is computed.
+        Circular minimum elevation (degrees). Mutually exclusive with
+        ``min_elevation_ns`` / ``min_elevation_ew``.
+    min_elevation_ns, min_elevation_ew : float or None, optional
+        Elliptical minimum elevations (degrees) toward north/south and
+        east/west. Must be set together.
     one_per_lst_hour : bool, optional
         If ``True``, keep only the best-scoring file per LST hour before
         applying ``quality_max_rms`` / ``quality_outlier_sigma``.  Intended
@@ -124,6 +131,8 @@ def screen_fits_by_quality(
             center_max_pixels=quality_center_max_pixels,
             metric=quality_metric,
             min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
         )
         rows.append((p, rms))
         if np.isnan(rms):
@@ -187,6 +196,8 @@ def temporal_std_healpix(
     coord_frame: str = "galactic",
     nested: bool = False,
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
     quality_max_rms: float | None = None,
     quality_outlier_sigma: float | None = None,
     quality_metric: Literal["std", "mad_sigma"] = "std",
@@ -220,8 +231,9 @@ def temporal_std_healpix(
     nested : bool, optional
         If ``True``, NESTED pixel ordering; otherwise RING.
     min_elevation : float or None, optional
-        Minimum elevation in degrees; pixels below are set to NaN before
-        reprojection, as in :func:`coadd_fits`.
+        Circular minimum elevation (degrees); see :func:`coadd_fits`.
+    min_elevation_ns, min_elevation_ew : float or None, optional
+        Elliptical elevation cut; see :func:`coadd_fits`.
     quality_max_rms : float or None, optional
         If set, reject files by center-patch dispersion before
         reprojection (see :func:`screen_fits_by_quality`).
@@ -274,6 +286,8 @@ def temporal_std_healpix(
             quality_center_fraction=quality_center_fraction,
             quality_center_max_pixels=quality_center_max_pixels,
             min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
         )
         if not paths:
             msg = "All input images were rejected by quality screening"
@@ -287,10 +301,13 @@ def temporal_std_healpix(
         hdu = fits.open(fpath)[0]
         data_2d, wcs_2d = _extract_2d(hdu)
 
-        if min_elevation is not None:
-            elevation = _pixel_elevations(wcs_2d, data_2d.shape)
-            data_2d = data_2d.copy()
-            data_2d[elevation < min_elevation] = np.nan
+        data_2d = _blank_data_outside_elevation(
+            data_2d,
+            wcs_2d,
+            min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
+        )
 
         reprojected, footprint = reproject_to_healpix(
             (data_2d, wcs_2d), coord_frame,
@@ -320,6 +337,8 @@ def coadd_fits(
     coord_frame: str = "galactic",
     nested: bool = False,
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
     quality_max_rms: float | None = None,
     quality_outlier_sigma: float | None = None,
     quality_metric: Literal["std", "mad_sigma"] = "std",
@@ -362,10 +381,17 @@ def coadd_fits(
     nested : bool, optional
         HEALPix NESTED ordering.  Only relevant when *nside* is given.
     min_elevation : float or None, optional
-        Minimum elevation above the horizon in degrees.  Pixels below
-        this elevation are blanked before reprojection.  Elevation is
-        measured as the angular distance from the image reference point
-        (assumed to be the local zenith).
+        Circular minimum elevation above the horizon in degrees.  Pixels
+        below this elevation are blanked before reprojection.  Elevation
+        is ``90° − separation(pixel, CRVAL)`` (CRVAL = local zenith).
+        Mutually exclusive with ``min_elevation_ns`` /
+        ``min_elevation_ew``.
+    min_elevation_ns, min_elevation_ew : float or None, optional
+        Elliptical horizon cut: minimum elevation (degrees) toward
+        north/south and east/west.  The keep-region is an ellipse in the
+        zenith-angle plane with semi-axes ``90 − elev_ns`` and
+        ``90 − elev_ew``.  Must be set together; mutually exclusive with
+        scalar ``min_elevation``.
     quality_max_rms : float or None, optional
         If set, reject images whose center-patch dispersion exceeds this
         value.
@@ -405,6 +431,8 @@ def coadd_fits(
             quality_center_fraction=quality_center_fraction,
             quality_center_max_pixels=quality_center_max_pixels,
             min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
         )
         if not paths:
             msg = "All input images were rejected by quality screening"
@@ -423,10 +451,13 @@ def coadd_fits(
         hdu = fits.open(fpath)[0]
         data_2d, wcs_2d = _extract_2d(hdu)
 
-        if min_elevation is not None:
-            elevation = _pixel_elevations(wcs_2d, data_2d.shape)
-            data_2d = data_2d.copy()
-            data_2d[elevation < min_elevation] = np.nan
+        data_2d = _blank_data_outside_elevation(
+            data_2d,
+            wcs_2d,
+            min_elevation=min_elevation,
+            min_elevation_ns=min_elevation_ns,
+            min_elevation_ew=min_elevation_ew,
+        )
 
         if nside is not None:
             reprojected, footprint = reproject_to_healpix(
@@ -464,6 +495,8 @@ def combine_fits_to_spectral_cube(
     *,
     freq_values: list[float] | np.ndarray | None = None,
     min_elevation: float | None = None,
+    min_elevation_ns: float | None = None,
+    min_elevation_ew: float | None = None,
     quality_max_rms: float | None = None,
     quality_outlier_sigma: float | None = None,
     quality_metric: Literal["std", "mad_sigma"] = "std",
@@ -501,8 +534,10 @@ def combine_fits_to_spectral_cube(
         Explicit frequency values for each file in the *flat-list* form.
         Ignored when *file_paths* is a dict (keys are the frequencies).
     min_elevation : float or None, optional
-        Minimum elevation in degrees.  Passed through to
+        Circular minimum elevation (degrees).  Passed through to
         :func:`coadd_fits` for per-channel coadding.
+    min_elevation_ns, min_elevation_ew : float or None, optional
+        Elliptical elevation cut; passed through to :func:`coadd_fits`.
     quality_max_rms : float or None, optional
         Passed to :func:`coadd_fits` when coadding multiple files per
         frequency.
@@ -598,6 +633,8 @@ def combine_fits_to_spectral_cube(
                 group,
                 target_header=ref_target,
                 min_elevation=min_elevation,
+                min_elevation_ns=min_elevation_ns,
+                min_elevation_ew=min_elevation_ew,
                 quality_max_rms=quality_max_rms,
                 quality_outlier_sigma=quality_outlier_sigma,
                 quality_metric=quality_metric,
