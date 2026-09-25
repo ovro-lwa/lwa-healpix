@@ -60,8 +60,14 @@ Reproject a 1-D HEALPix map onto an arbitrary 2-D celestial WCS
 ### `nested_tile_header` / `iter_nested_tile_headers`
 
 Build local TAN (or SIN) WCS headers centered on nested HEALPix pixels at
-`nside_tile`, with pixel scale from `nside_map` and optional FOV `overlap`
-(default `0.2`). Typical detect defaults: `nside_map=2048`, `nside_tile=4`.
+`nside_tile`, with pixel scale from `nside_map`.
+
+Default **`align="diamond"`** rotates each square onto the HEALPix cell edges
+and pads with **`margin=0.05`**, so neighboring tiles cover the diamond
+corners (the gaps left by a north-aligned square at `overlap=0.2`). Pass
+`align="celestial"` with `overlap` (default `0.2`) for the legacy
+RA/Dec-aligned FOV. Typical detect defaults: `nside_map=2048`,
+`nside_tile=4`.
 
 ### `healpix_to_hdu`
 

@@ -103,7 +103,7 @@ class TestNestedTileHeader:
         nside_tile = 4
         ipix = 17
         hdr = nested_tile_header(
-            nside_tile, ipix, nside_map=16, overlap=0.2, ctype="TAN",
+            nside_tile, ipix, nside_map=16, align="celestial", overlap=0.2, ctype="TAN",
         )
         theta, phi = hp.pix2ang(nside_tile, ipix, nest=True)
         assert hdr["CRVAL1"] == pytest.approx(np.degrees(phi))
@@ -111,13 +111,67 @@ class TestNestedTileHeader:
         assert hdr["CTYPE1"] == "RA---TAN"
         assert abs(hdr["CDELT1"]) == pytest.approx(pixel_scale_deg_for_nside(16))
 
-    def test_naxis_from_fov(self):
-        hdr = nested_tile_header(4, 0, nside_map=32, overlap=0.0)
+    def test_naxis_from_fov_celestial(self):
+        hdr = nested_tile_header(4, 0, nside_map=32, align="celestial", overlap=0.0)
         tile_scale = pixel_scale_deg_for_nside(4)
         map_scale = pixel_scale_deg_for_nside(32)
         expected = int(np.ceil(tile_scale / map_scale))
         assert hdr["NAXIS1"] == expected
         assert hdr["NAXIS2"] == expected
+
+    def test_diamond_has_cd_matrix(self):
+        hdr = nested_tile_header(4, 0, nside_map=32, align="diamond", margin=0.05)
+        assert hdr["CTYPE1"] == "RA---TAN"
+        assert "CD1_1" in hdr
+        assert "CDELT1" not in hdr
+        theta, phi = hp.pix2ang(4, 0, nest=True)
+        assert hdr["CRVAL1"] == pytest.approx(np.degrees(phi))
+        assert hdr["CRVAL2"] == pytest.approx(90.0 - np.degrees(theta))
+
+    def test_diamond_contains_own_vertices(self):
+        nside_tile = 4
+        nside_map = 64
+        for ipix in (0, 15, 80, 100):
+            hdr = nested_tile_header(
+                nside_tile, ipix, nside_map=nside_map, align="diamond", margin=0.05,
+            )
+            wcs = WCS(hdr)
+            vec = hp.boundaries(nside_tile, ipix, step=1, nest=True)
+            theta, phi = hp.vec2ang(vec.T)
+            ra = np.degrees(phi)
+            dec = 90.0 - np.degrees(theta)
+            x, y = wcs.world_to_pixel_values(ra, dec)
+            nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
+            assert np.all((x >= -0.5) & (x < nx - 0.5))
+            assert np.all((y >= -0.5) & (y < ny - 0.5))
+
+    def test_diamond_sky_coverage_beats_celestial_overlap02(self):
+        """Diamond margin=0.05 covers the sky; celestial overlap=0.2 leaves gaps."""
+        nside_tile = 4
+        nside_map = 64
+        nside_test = 32
+        npix = 12 * nside_test**2
+        theta, phi = hp.pix2ang(nside_test, np.arange(npix), nest=True)
+        ra = np.degrees(phi)
+        dec = 90.0 - np.degrees(theta)
+
+        def covered_fraction(align: str, **kwargs) -> float:
+            covered = np.zeros(npix, dtype=bool)
+            for ipix in range(12 * nside_tile**2):
+                hdr = nested_tile_header(
+                    nside_tile, ipix, nside_map=nside_map, align=align, **kwargs,
+                )
+                wcs = WCS(hdr)
+                x, y = wcs.world_to_pixel_values(ra, dec)
+                nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
+                covered |= (x >= -0.5) & (x < nx - 0.5) & (y >= -0.5) & (y < ny - 0.5)
+            return float(covered.mean())
+
+        celestial = covered_fraction("celestial", overlap=0.2)
+        diamond = covered_fraction("diamond", margin=0.05)
+        assert celestial < diamond
+        assert diamond == pytest.approx(1.0, abs=1e-6)
+        assert celestial < 0.985
 
     def test_invalid_ipix(self):
         with pytest.raises(ValueError, match="ipix"):
@@ -130,6 +184,10 @@ class TestNestedTileHeader:
     def test_nside_not_power_of_two(self):
         with pytest.raises(ValueError, match="power of 2"):
             nested_tile_header(3, 0, nside_map=12)
+
+    def test_invalid_align(self):
+        with pytest.raises(ValueError, match="align"):
+            nested_tile_header(4, 0, nside_map=16, align="hexagon")  # type: ignore[arg-type]
 
 
 class TestHealpixToHdu:
