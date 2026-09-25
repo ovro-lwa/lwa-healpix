@@ -119,11 +119,15 @@ class TestNestedTileHeader:
         assert hdr["NAXIS1"] == expected
         assert hdr["NAXIS2"] == expected
 
-    def test_diamond_has_cd_matrix(self):
+    def test_diamond_has_cdelt_and_pc(self):
         hdr = nested_tile_header(4, 0, nside_map=32, align="diamond", margin=0.05)
         assert hdr["CTYPE1"] == "RA---TAN"
-        assert "CD1_1" in hdr
-        assert "CDELT1" not in hdr
+        assert "CDELT1" in hdr and "CDELT2" in hdr
+        assert "PC1_1" in hdr and "PC2_2" in hdr
+        assert "CD1_1" not in hdr
+        map_scale = pixel_scale_deg_for_nside(32)
+        assert hdr["CDELT1"] == pytest.approx(-map_scale)
+        assert hdr["CDELT2"] == pytest.approx(map_scale)
         theta, phi = hp.pix2ang(4, 0, nest=True)
         assert hdr["CRVAL1"] == pytest.approx(np.degrees(phi))
         assert hdr["CRVAL2"] == pytest.approx(90.0 - np.degrees(theta))

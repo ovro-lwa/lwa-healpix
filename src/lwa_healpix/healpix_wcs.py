@@ -221,8 +221,16 @@ def _diamond_aligned_header(
         proj_point=center,
         projection=ctype_key,
     )
-    # Prefer a CD matrix at map scale; force exact CRPIX / NAXIS.
+    # Factor pixel_scale_matrix into CDELT + PC so PyBDSF (and other tools that
+    # require CDELT1/CDELT2) work; CD-only headers raise KeyError there.
     scale_matrix = np.asarray(wcs.pixel_scale_matrix, dtype=float)
+    cdelt1 = -map_scale
+    cdelt2 = map_scale
+    pc1_1 = float(scale_matrix[0, 0] / cdelt1)
+    pc1_2 = float(scale_matrix[0, 1] / cdelt1)
+    pc2_1 = float(scale_matrix[1, 0] / cdelt2)
+    pc2_2 = float(scale_matrix[1, 1] / cdelt2)
+
     galactic = _is_galactic_frame(coord_frame)
     if galactic:
         ctype1, ctype2 = f"GLON-{ctype_key}", f"GLAT-{ctype_key}"
@@ -239,10 +247,12 @@ def _diamond_aligned_header(
     header["CRVAL2"] = float(center.spherical.lat.degree)
     header["CRPIX1"] = crpix
     header["CRPIX2"] = crpix
-    header["CD1_1"] = float(scale_matrix[0, 0])
-    header["CD1_2"] = float(scale_matrix[0, 1])
-    header["CD2_1"] = float(scale_matrix[1, 0])
-    header["CD2_2"] = float(scale_matrix[1, 1])
+    header["CDELT1"] = cdelt1
+    header["CDELT2"] = cdelt2
+    header["PC1_1"] = pc1_1
+    header["PC1_2"] = pc1_2
+    header["PC2_1"] = pc2_1
+    header["PC2_2"] = pc2_2
     header["CUNIT1"] = "deg"
     header["CUNIT2"] = "deg"
     if not galactic:
