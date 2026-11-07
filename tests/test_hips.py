@@ -14,6 +14,7 @@ from lwa_healpix.hips import (
     fits_to_hips,
     fits_to_hips_cube,
     healpix_to_hips,
+    upgrade_hips,
     upgrade_hips3d,
 )
 from lwa_healpix.hips_moc import C_LIGHT_M_S, wavelength_range_from_freq
@@ -94,6 +95,10 @@ class TestHealpixToHips:
         assert (out_dir / "index.html").exists()
         props = (out_dir / "properties").read_text()
         assert "hips_pixel_cut" in props
+        assert _bitpix_from_properties(props) == -32
+        index_html = (out_dir / "index.html").read_text()
+        assert "/static/aladin.js" in index_html
+        assert "aladin.cds.unistra.fr" not in index_html
 
     def test_norder_directories_exist(self, tmp_path):
         nside = 8
@@ -156,9 +161,11 @@ class TestFitsToHips:
         assert (out_dir / "index.html").exists()
         props = (out_dir / "properties").read_text()
         assert "hips_pixel_cut" in props
+        assert _bitpix_from_properties(props) == -32
         index_html = (out_dir / "index.html").read_text()
         assert "loadDefaultCuts" in index_html
         assert 'value="magma"' in index_html
+        assert "/static/aladin.js" in index_html
 
     def test_output_from_fits_file(self, tmp_path):
         fpath = _make_lwa_fits(
@@ -235,7 +242,7 @@ class TestFitsToHipsCube:
         index_html = (out_dir / "index.html").read_text()
         assert "HiPS3D" in index_html
         assert "setBaseImageLayer" in index_html
-        assert "3.8.1/aladin.js" in index_html
+        assert "/static/aladin.js" in index_html
         assert "isSanePixelCut" in index_html
 
     def test_default_tile_dimensions(self):
@@ -364,3 +371,46 @@ class TestFitsToHipsCube:
 
         props = props_path.read_text()
         assert "hips_pixel_cut" not in props
+
+
+def _bitpix_from_properties(props_text: str) -> int:
+    for line in props_text.splitlines():
+        if line.startswith("hips_pixel_bitpix"):
+            return int(line.split("=", 1)[1].strip())
+    raise AssertionError("hips_pixel_bitpix missing")
+
+
+# ---------------------------------------------------------------------------
+# upgrade_hips (2-D viewer / bitpix patch)
+# ---------------------------------------------------------------------------
+
+
+class TestUpgradeHips:
+    def test_fixes_bitpix_and_cdn_index(self, tmp_path):
+        nside = 8
+        out_dir = tmp_path / "hips_upgrade"
+        healpix_to_hips(
+            np.ones(12 * nside**2, dtype=np.float32),
+            output_directory=out_dir,
+            threads=False,
+        )
+
+        props_path = out_dir / "properties"
+        lines = []
+        for line in props_path.read_text().splitlines():
+            if line.startswith("hips_pixel_bitpix"):
+                lines.append("hips_pixel_bitpix    = -64")
+            else:
+                lines.append(line)
+        props_path.write_text("\n".join(lines) + "\n")
+        (out_dir / "index.html").write_text(
+            '<script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"></script>\n',
+        )
+
+        upgrade_hips(out_dir)
+
+        props = props_path.read_text()
+        assert _bitpix_from_properties(props) == -32
+        index_html = (out_dir / "index.html").read_text()
+        assert "/static/aladin.js" in index_html
+        assert "aladin.cds.unistra.fr" not in index_html

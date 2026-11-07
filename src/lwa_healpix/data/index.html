@@ -78,9 +78,9 @@
   <div id="aladin-lite"></div>
 </body>
 
-<script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+<script type="module">
+  import A from '/static/aladin.js';
 
-<script type="text/javascript">
   let aladin = null;
   const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
   const viewParams = new URLSearchParams(location.search);

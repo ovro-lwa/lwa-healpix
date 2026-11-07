@@ -16,7 +16,13 @@ from .healpix_wcs import (
     pixel_scale_deg_for_nside,
     reproject_healpix_to_wcs,
 )
-from .hips import fits_to_hips, fits_to_hips_cube, healpix_to_hips, upgrade_hips3d
+from .hips import (
+    fits_to_hips,
+    fits_to_hips_cube,
+    healpix_to_hips,
+    upgrade_hips,
+    upgrade_hips3d,
+)
 from .utils import (
     OVRO_LATITUDE_DEG,
     altaz_to_ha_dec,

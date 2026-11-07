@@ -46,8 +46,9 @@
   <div id="error" style="display:none;position:absolute;top:10px;left:10px;z-index:1001;
     background:#fee;color:#900;padding:10px;border-radius:4px;max-width:60%;font:13px system-ui,sans-serif;"></div>
   <div id="aladin-lite"></div>
-  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"></script>
-  <script>
+  <script type="module">
+    import A from '/static/aladin.js';
+
     const p = new URLSearchParams(location.search);
     const paths = {
       red:   './' + p.get('red')   + '/',

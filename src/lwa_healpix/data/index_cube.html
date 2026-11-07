@@ -79,9 +79,10 @@
   </div>
   <div id="aladin-lite"></div>
 
-  <!-- HiPS3D spectrogram requires Aladin Lite v3.8+ (not v2). -->
-  <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.1/aladin.js" charset="utf-8"></script>
-  <script type="text/javascript">
+  <!-- HiPS3D spectrogram requires Aladin Lite v3.8+ (not v2). Vendored ESM build. -->
+  <script type="module">
+    import A from '/static/aladin.js';
+
     const MAX_SANE_PIXEL_CUT_ABS = 1e10;
     const defaultConfig = { minCut: -1, maxCut: 10, colormap: 'cubehelix' };
     let aladin = null;

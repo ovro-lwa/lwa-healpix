@@ -41,6 +41,7 @@ __all__ = [
     "fits_to_hips",
     "fits_to_hips_cube",
     "healpix_to_hips",
+    "upgrade_hips",
     "upgrade_hips3d",
 ]
 
@@ -236,6 +237,95 @@ def _sanitize_hips_pixel_cut(props: dict[str, str | float]) -> None:
         props.pop("hips_pixel_cut", None)
 
 
+def _sample_fits_tile_bitpix(output_directory: Path) -> int | None:
+    """Return ``BITPIX`` from one FITS tile under *output_directory*, if any."""
+    for tile in sorted(output_directory.glob("Norder*/Dir*/Npix*.fits")):
+        try:
+            return int(fits.getheader(tile)["BITPIX"])
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            logger.debug("Could not read BITPIX from %s: %s", tile, exc)
+            continue
+    return None
+
+
+def _correct_hips_pixel_bitpix(
+    props: dict[str, str | float],
+    output_directory: Path,
+) -> None:
+    """Align ``hips_pixel_bitpix`` with tile ``BITPIX``.
+
+    ``reproject.hips`` writes float32 FITS tiles (``BITPIX=-32``) but hardcodes
+    ``hips_pixel_bitpix=-64`` in ``properties``.  Aladin Lite uses the
+    properties value when decoding FITS tiles, so the mismatch blanks or
+    scrambles the survey.
+    """
+    if str(props.get("hips_tile_format", "fits")).split()[0] != "fits":
+        return
+    bitpix = _sample_fits_tile_bitpix(output_directory)
+    if bitpix is None:
+        # reproject's fits path always casts tiles to float32.
+        bitpix = -32
+        logger.debug(
+            "No FITS tiles yet under %s; defaulting hips_pixel_bitpix to %s",
+            output_directory,
+            bitpix,
+        )
+    current = props.get("hips_pixel_bitpix")
+    if current is not None and int(float(current)) == bitpix:
+        return
+    if current is not None:
+        logger.info(
+            "Correcting hips_pixel_bitpix %s → %s in %s",
+            current,
+            bitpix,
+            output_directory,
+        )
+    props["hips_pixel_bitpix"] = bitpix
+
+
+def _finalize_hips2d_properties(output_directory: Path) -> None:
+    """Fix reproject metadata that breaks Aladin Lite FITS HiPS viewers."""
+    props_path = output_directory / "properties"
+    if not props_path.exists():
+        return
+    props = load_properties(str(output_directory))
+    _correct_hips_pixel_bitpix(props, output_directory)
+    _sanitize_hips_pixel_cut(props)
+    save_properties(str(output_directory), props)
+
+
+def upgrade_hips(
+    output_directory: str | Path,
+    *,
+    refresh_index: bool = True,
+) -> None:
+    """Patch an existing 2-D HiPS directory for Aladin Lite compatibility.
+
+    Corrects ``hips_pixel_bitpix`` to match tile ``BITPIX`` (reproject writes
+    float32 tiles but labels them ``-64``) and optionally refreshes
+    ``index.html`` from the bundled viewer that loads Aladin from
+    ``/static/aladin.js`` instead of the CDS CDN.
+
+    Does not regenerate tiles.
+
+    Parameters
+    ----------
+    output_directory : str or Path
+        Root of an existing image HiPS tile set.
+    refresh_index : bool, optional
+        If ``True`` (default), replace ``index.html`` with the bundled
+        local-static Aladin viewer.
+    """
+    output_directory = Path(output_directory)
+    if not (output_directory / "properties").exists():
+        msg = f"No HiPS properties file in {output_directory}"
+        raise ValueError(msg)
+
+    _finalize_hips2d_properties(output_directory)
+    if refresh_index:
+        _copy_index_html(output_directory)
+
+
 def _finalize_hips3d_properties(
     output_directory: Path,
     *,
@@ -281,6 +371,8 @@ def _finalize_hips3d_properties(
 
     if "hips_pixel_cut" not in user:
         _sanitize_hips_pixel_cut(props)
+    if "hips_pixel_bitpix" not in user:
+        _correct_hips_pixel_bitpix(props, output_directory)
 
     props.update(user)
     save_properties(str(output_directory), props)
@@ -433,6 +525,7 @@ def healpix_to_hips(
         properties=hips_properties,
     )
 
+    _finalize_hips2d_properties(output_directory)
     _copy_index_html(output_directory)
 
 
@@ -496,6 +589,7 @@ def fits_to_hips(
         properties=hips_properties,
     )
 
+    _finalize_hips2d_properties(output_directory)
     _copy_index_html(output_directory)
 
 
